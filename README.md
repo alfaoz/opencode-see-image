@@ -72,7 +72,7 @@ plugin's system-prompt instructions tell the model to call see_image
 see_image tool:
   1. locates the file (macOS screenshot temp dirs, ~/Desktop, ~/Downloads, cwd)
   2. base64-encodes it
-  3. sends it to the vision model via the Anthropic Messages API
+  3. routes it to the vision model via opencode's SDK (or direct HTTP if SEE_IMAGE_API_KEY is set)
   4. returns the textual description
         │
         ▼
@@ -92,16 +92,16 @@ Your model calls this tool automatically when you attach a screenshot, you don't
 
 ## Configuration
 
-All settings are env-var overrides. Defaults work out-of-the-box for opencode-go + MiniMax M3.
+All settings are env-var overrides. The plugin uses opencode's SDK client by default (handles auth automatically). Set `SEE_IMAGE_API_KEY` to bypass the SDK and call an HTTP endpoint directly.
 
 | Env var | Default | Description |
 |---|---|---|
-| `SEE_IMAGE_MODEL` | `minimax-m3` | Vision model ID to call |
-| `SEE_IMAGE_PROVIDER` | `opencode-go` | Provider key in opencode's `auth.json` |
-| `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | Anthropic-Messages-compatible endpoint |
-| `SEE_IMAGE_API_KEY` | _(reads auth.json)_ | Bypass auth.json with an explicit key |
-| `SEE_IMAGE_API_VERSION` | `2023-06-01` | `anthropic-version` header value |
-| `SEE_IMAGE_USER_AGENT` | _(Chrome UA)_ | Override the User-Agent header |
+| `SEE_IMAGE_MODEL` | `minimax-m3` | Vision model ID |
+| `SEE_IMAGE_PROVIDER` | `opencode-go` | Provider ID for SDK routing |
+| `SEE_IMAGE_API_KEY` | _(uses SDK)_ | Bypass SDK, call HTTP endpoint directly |
+| `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used if `SEE_IMAGE_API_KEY` is set) |
+| `SEE_IMAGE_API_VERSION` | `2023-06-01` | `anthropic-version` header (HTTP mode only) |
+| `SEE_IMAGE_USER_AGENT` | _(Chrome UA)_ | User-Agent header (HTTP mode only) |
 
 ### Using a different vision model
 
@@ -148,7 +148,7 @@ Then restart opencode. (No bun required, this uses opencode's own bun.)
 
 **Pin a version** in your config to opt out of auto-updates:
 ```jsonc
-"plugin": ["opencode-see-image@0.4.1"]
+"plugin": ["opencode-see-image@0.4.2"]
 ```
 
 ## File search locations

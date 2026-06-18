@@ -76,6 +76,7 @@ async function seeImageViaSDK(
   dataUrl: string,
   mediaType: string,
   prompt: string,
+  abort?: AbortSignal,
 ): Promise<{ text: string; model: string; provider: string }> {
   const envProvider = process.env.SEE_IMAGE_PROVIDER
   const envModel = process.env.SEE_IMAGE_MODEL
@@ -144,6 +145,7 @@ async function seeImageViaHTTP(
   b64: string,
   mediaType: string,
   prompt: string,
+  abort?: AbortSignal,
 ): Promise<{ text: string; model: string; provider: string }> {
   const key = process.env.SEE_IMAGE_API_KEY!
   const body = {
@@ -172,6 +174,7 @@ async function seeImageViaHTTP(
       "user-agent": USER_AGENT,
     },
     body: JSON.stringify(body),
+    signal: abort,
   })
 
   if (!res.ok) {
@@ -347,9 +350,9 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       let result: { text: string; model: string; provider: string }
 
       if (process.env.SEE_IMAGE_API_KEY) {
-        result = await seeImageViaHTTP(b64, mediaType, prompt)
+        result = await seeImageViaHTTP(b64, mediaType, prompt, context.abort)
       } else {
-        result = await seeImageViaSDK(client, dataUrl, mediaType, prompt)
+        result = await seeImageViaSDK(client, dataUrl, mediaType, prompt, context.abort)
       }
 
       context.metadata({
