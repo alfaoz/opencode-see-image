@@ -32,25 +32,27 @@ Install the opencode-see-image plugin so I can send you screenshots. Do this:
 After I restart and attach a screenshot, you should call the see_image tool to view it.
 ```
 
-Then restart opencode.
-
 ## Prerequisites
 
-You need a connected vision-capable provider. The plugin auto-detects whichever you have connected — **either of these works**:
+You need a connected vision-capable provider. The plugin auto-detects whichever you have connected, **either of these works**:
 
-### Option A — Free (OpenCode Zen)
+### Free (OpenCode Zen)
 1. Run `/connect` in opencode
 2. Select **opencode** (OpenCode Zen)
 3. Paste your API key from [opencode.ai/auth](https://opencode.ai/auth)
 
-The plugin falls back to **big-pickle** (free, vision-capable, ~20s). No subscription needed.
+The plugin falls back to **big-pickle** (~12000ms). No subscription needed.
 
-### Option B — Paid, fast (OpenCode Go)
+### Paid, w/ OpenCode Go
 1. Run `/connect` in opencode
 2. Select **opencode-go**
 3. Paste your API key from [opencode.ai/auth](https://opencode.ai/auth)
 
-The plugin prefers **minimax-m3** via opencode-go (~3s) when available.
+The plugin prefers **minimax-m3** via opencode-go (~3000ms) when available.
+
+### Paid, w/ another provider
+
+Set the `SEE_IMAGE_*` env vars to point at any Anthropic-Messages-compatible endpoint. See [Configuration](#configuration) below.
 
 **Resolution order:** explicit `SEE_IMAGE_API_KEY` env → configured `SEE_IMAGE_PROVIDER` → `opencode-go` (MiniMax M3) → `opencode` (big-pickle, free).
 
@@ -85,7 +87,7 @@ The plugin registers a `see_image` tool with two arguments:
 | `filePath` | string | yes | Path to the image. Absolute path, or a bare filename like `"Screenshot 2026-06-18 at 17.32.24.png"` to auto-locate. |
 | `question` | string | no | A specific question about the image. Defaults to a general detailed description. Use this to focus on a particular detail (e.g. `"What error is shown in the terminal?"`). |
 
-Your model calls this tool automatically when you attach a screenshot — you don't need to do anything special. The `question` arg is optional; the model uses it when you ask something specific about the image.
+Your model calls this tool automatically when you attach a screenshot, you don't need to do anything special. The `question` arg is optional; the model uses it when you ask something specific about the image.
 
 ## Configuration
 
@@ -122,20 +124,20 @@ export SEE_IMAGE_MODEL="kimi-k2.7-code"
 
 | Model | Speed | Notes |
 |---|---|---|
-| `big-pickle` | ~20s | Free. Accurate. Default fallback when only Zen is connected. |
+| `big-pickle` | ~12000ms | Free. Accurate. Default fallback when only Zen is connected. |
 
 **Paid (OpenCode Go):**
 
 | Model | Speed | Notes |
 |---|---|---|
-| `minimax-m3` | ~3s | Default. Fast, clean text output. |
-| `kimi-k2.7-code` | ~7s | Clean output, accurate. |
-| `kimi-k2.6` | ~20s | Accurate but slow. |
-| `qwen3.7-plus` | ~20s | Emits thinking blocks (handled). |
+| `minimax-m3` | ~3000ms | Default. Fast, clean text output. |
+| `kimi-k2.7-code` | ~7000ms | Clean output, accurate. |
+| `kimi-k2.6` | ~20000ms | Accurate but slow. |
+| `qwen3.7-plus` | ~20000ms | Emits thinking blocks (handled). |
 
 ## Updating
 
-**Auto-update (built in):** the plugin checks npm for a newer version on every opencode startup. If one exists, it runs `bun update` automatically and shows a toast: *"opencode-see-image updated to X.Y.Z — restart opencode to apply"*. You just need to restart opencode to load the new version. Nothing to configure.
+**Auto-update (built in):** the plugin checks npm for a newer version on every opencode startup. If one exists, it runs `bun update` automatically and shows a toast: *"opencode-see-image updated to X.Y.Z, restart opencode to apply"*. You just need to restart opencode to load the new version. Nothing to configure.
 
 **Manual update** (if you want to force it now):
 ```bash
@@ -152,9 +154,9 @@ Then restart opencode.
 
 When opencode rejects an image attachment, the model only receives a bare filename. `see_image` searches these locations in order:
 
-1. `$TMPDIR/TemporaryItems/NSIRD_screencaptureui_*/` — where macOS stashes dragged screenshots
+1. `$TMPDIR/TemporaryItems/NSIRD_screencaptureui_*/` (where macOS stashes dragged screenshots)
 2. `$TMPDIR/TemporaryItems/`
-3. `~/Desktop` — default screenshot save location
+3. `~/Desktop` (default screenshot save location)
 4. `~/Downloads`
 5. Current working directory
 
