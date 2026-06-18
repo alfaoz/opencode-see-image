@@ -25,20 +25,13 @@ Add the plugin to your opencode config:
 ```
 Then restart opencode.
 
+## Install via your agent
 
-## Install via your agent (copy-paste this)
-
-Paste this prompt to your opencode agent, and it'll install the plugin for you.
-
+Ask your agent:
 ```
-Install the opencode-see-image plugin so I can send you screenshots. Do this:
-
-1. Edit ~/.config/opencode/opencode.jsonc (create it if missing). Preserve any existing fields and the $schema. Add "opencode-see-image" to the "plugin" array. If "plugin" doesn't exist, add it as ["opencode-see-image"].
-2. Check that a vision-capable provider is connected by looking for ~/.local/share/opencode/auth.json with either an "opencode-go" entry (paid, fast) OR an "opencode" entry (free). If neither is present, tell me to run /connect and select either opencode-go or opencode (key from opencode.ai/auth).
-3. Tell me to quit and restart opencode for the plugin to load.
-
-After I restart and attach a screenshot, you should call the see_image tool to view it.
+install opencode-see-image
 ```
+It'll run `opencode plugin opencode-see-image --global` and tell you to restart.
 
 ## Prerequisites
 
