@@ -44,14 +44,30 @@ function resolveFromDb(filename: string): ResolvedImage | null {
 
   try {
     const db = new Database(dbPath, { readonly: true })
-    const rows = db
-      .query(
-        `SELECT data FROM part
-         WHERE json_extract(data, '$.type') = 'file'
-           AND json_extract(data, '$.filename') = ?
-         ORDER BY time_created DESC LIMIT 1`,
-      )
-      .all(filename) as Array<{ data: string }>
+    let rows: Array<{ data: string }>
+
+    if (!filename || filename === "clipboard") {
+      // No filename: get the most recent file part (handles clipboard pastes
+      // where opencode labels the error as "clipboard" but the DB part has
+      // the original filename).
+      rows = db
+        .query(
+          `SELECT data FROM part
+           WHERE json_extract(data, '$.type') = 'file'
+             AND json_extract(data, '$.url') LIKE 'data:%'
+           ORDER BY time_created DESC LIMIT 1`,
+        )
+        .all() as Array<{ data: string }>
+    } else {
+      rows = db
+        .query(
+          `SELECT data FROM part
+           WHERE json_extract(data, '$.type') = 'file'
+             AND json_extract(data, '$.filename') = ?
+           ORDER BY time_created DESC LIMIT 1`,
+        )
+        .all(filename) as Array<{ data: string }>
+    }
 
     db.close()
 
@@ -130,19 +146,17 @@ function resolveFromFilesystem(
 }
 
 function resolveImage(name: string, cwd: string): ResolvedImage {
-  if (name === "clipboard") {
-    const fromDb = resolveFromDb("")
-    if (fromDb) return fromDb
-  }
-
+  // DB first: handles clipboard pastes, dragged files, screenshots.
+  // For "clipboard" or empty name, gets the most recent file part.
   const fromDb = resolveFromDb(name)
   if (fromDb) return fromDb
 
+  // Filesystem fallback for files not yet in the DB.
   const fromFs = resolveFromFilesystem(name, cwd)
   if (fromFs) return fromFs
 
   throw new Error(
-    `see_image: could not find "${name}". Searched opencode DB and filesystem (cwd, ~/Desktop, ~/Downloads, temp). Pass an absolute filePath instead.`,
+    `see_image: could not find "${name}". Searched opencode DB and filesystem. Pass an absolute filePath instead.`,
   )
 }
 
