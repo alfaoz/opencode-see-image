@@ -137,17 +137,17 @@ export SEE_IMAGE_MODEL="kimi-k2.7-code"
 
 ## Updating
 
-**Auto-update (built in):** the plugin checks npm for a newer version on every opencode startup. If one exists, it runs `bun update` automatically and shows a toast: *"opencode-see-image updated to X.Y.Z, restart opencode to apply"*. You just need to restart opencode to load the new version. Nothing to configure.
+**Auto-update (built in):** the plugin checks npm for a newer version on every opencode startup. If one exists, it updates itself via `opencode plugin --force` (uses opencode's bundled bun, no global bun needed) and shows a toast: *"opencode-see-image updated to X.Y.Z, restart opencode to apply"*. You just need to restart opencode to load the new version. Nothing to configure.
 
 **Manual update** (if you want to force it now):
 ```bash
-cd ~/.cache/opencode && bun update opencode-see-image
+opencode plugin opencode-see-image --force --global
 ```
-Then restart opencode.
+Then restart opencode. (No bun required, this uses opencode's own bun.)
 
 **Pin a version** in your config to opt out of auto-updates:
 ```jsonc
-"plugin": ["opencode-see-image@0.3.0"]
+"plugin": ["opencode-see-image@0.4.1"]
 ```
 
 ## File search locations

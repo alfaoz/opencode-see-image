@@ -271,14 +271,24 @@ async function maybeAutoUpdate(
 
   if (!semverGt(latest, current)) return
 
-  log(`update available: ${current} -> ${latest}; running bun update`, "info")
+  log(`update available: ${current} -> ${latest}; updating`, "info")
 
-  const cacheDir = path.join(os.homedir(), ".cache/opencode")
+  // Use opencode's own plugin command to re-resolve from npm. This uses
+  // opencode's bundled bun, so it works even when bun isn't installed
+  // globally on the user's PATH.
+  const opencodeBin =
+    process.env.OPENCODE_BIN ||
+    path.join(os.homedir(), ".opencode/bin/opencode")
   try {
-    await $`cd ${cacheDir} && bun update ${PKG_NAME} --no-save`.quiet()
+    await $`${opencodeBin} plugin ${PKG_NAME} --force --global`.quiet()
   } catch (e: any) {
-    log(`bun update failed: ${e?.message ?? e}`, "warn")
-    return
+    // Fallback: try bare `opencode` on PATH
+    try {
+      await $`opencode plugin ${PKG_NAME} --force --global`.quiet()
+    } catch (e2: any) {
+      log(`plugin update failed: ${e2?.message ?? e2}`, "warn")
+      return
+    }
   }
 
   try {
