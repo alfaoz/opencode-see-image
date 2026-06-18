@@ -119,6 +119,11 @@ function resolveFromFilesystem(
 ): ResolvedImage | null {
   let absPath: string | null = null
 
+  // Expand tilde to home directory
+  if (name.startsWith("~")) {
+    name = path.join(os.homedir(), name.slice(1))
+  }
+
   if (path.isAbsolute(name) && fs.existsSync(name)) {
     absPath = name
   } else {
@@ -462,7 +467,12 @@ const SeeImagePlugin: Plugin = async (ctx) => {
   const log = (message: string, level: string = "info") => {
     try {
       client?.app?.log?.({ body: { service: PKG_NAME, level, message } })
-    } catch {}
+    } catch {
+      // fallback for environments where client.app.log is unavailable
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[${PKG_NAME}] ${level}: ${message}`)
+      }
+    }
   }
 
   log(`plugin initialized`, "info")
