@@ -4,10 +4,6 @@ import os from "os"
 import fs from "fs"
 import type { Plugin } from "@opencode-ai/plugin"
 
-// ─── Configuration (env-overridable) ────────────────────────────────────────
-// Defaults target opencode-go's MiniMax M3. Users on other providers can
-// override via environment variables without editing this file.
-
 const ENDPOINT =
   process.env.SEE_IMAGE_ENDPOINT ||
   "https://opencode.ai/zen/go/v1/messages"
@@ -27,61 +23,6 @@ const EXT_MEDIA: Record<string, string> = {
   bmp: "image/bmp",
 }
 
-// ─── Auth ───────────────────────────────────────────────────────────────────
-// Resolves a usable API key + the endpoint + model to use. Falls back through
-// a chain so users with any connected opencode subscription (paid opencode-go
-// or free opencode Zen) get a working default with zero config.
-function resolveAuth(): { key: string; endpoint: string; model: string } {
-  // 1. Explicit env vars win outright.
-  if (process.env.SEE_IMAGE_API_KEY) {
-    return { key: process.env.SEE_IMAGE_API_KEY, endpoint: ENDPOINT, model: MODEL }
-  }
-
-  // 2. Walk opencode's auth store and try the configured provider first,
-  //    then a curated fallback chain (paid → free).
-  const authPath = path.join(os.homedir(), ".local/share/opencode/auth.json")
-  let auth: any = {}
-  try {
-    auth = JSON.parse(fs.readFileSync(authPath, "utf8"))
-  } catch {
-    // ignore — handled by the empty-auth path below
-  }
-
-  // Each candidate: [providerId, endpoint, defaultModel]
-  const candidates: Array<[string, string, string]> = [
-    [PROVIDER_ID, ENDPOINT, MODEL],
-    // Free fallback: OpenCode Zen's big-pickle supports vision at no cost.
-    ["opencode", "https://opencode.ai/zen/v1/messages", "big-pickle"],
-    // Paid fallbacks on opencode-go:
-    ["opencode-go", "https://opencode.ai/zen/go/v1/messages", "minimax-m3"],
-  ]
-
-  const tried: string[] = []
-  for (const [pid, ep, mdl] of candidates) {
-    const entry = auth[pid]
-    const k = entry && (entry.key || entry.access)
-    if (k) {
-      // If the user pinned PROVIDER_ID but not MODEL, honor the candidate's
-      // default model only when provider matches the pinned one; otherwise
-      // keep the configured MODEL (may be set via env).
-      const useModel =
-        pid === PROVIDER_ID || !process.env.SEE_IMAGE_MODEL ? mdl : MODEL
-      return { key: k, endpoint: ep, model: useModel }
-    }
-    tried.push(pid)
-  }
-
-  throw new Error(
-    `see_image: no API key. Connect a provider in opencode via /connect — ` +
-      `either "opencode-go" (paid, fast MiniMax M3) or "opencode" (free, big-pickle). ` +
-      `Or set SEE_IMAGE_API_KEY explicitly. (Checked providers: ${tried.join(", ") || "none"} in ${authPath}.)`,
-  )
-}
-
-// ─── File resolution ────────────────────────────────────────────────────────
-// When opencode rejects an image attachment, the model only sees a bare
-// filename (no path). This resolves bare filenames by searching the places
-// macOS / opencode tend to stash screenshots.
 function resolveFilePath(name: string, cwd: string): string {
   if (path.isAbsolute(name) && fs.existsSync(name)) return name
 
@@ -91,8 +32,6 @@ function resolveFilePath(name: string, cwd: string): string {
   const tmpdir = process.env.TMPDIR || "/tmp"
   const searchDirs: string[] = []
 
-  // macOS screenshot tool temp dirs (NSIRD_screencaptureui_<rand>) — this is
-  // where dragged screenshots actually land, not ~/Desktop.
   const tempItems = path.join(tmpdir, "TemporaryItems")
   if (fs.existsSync(tempItems)) {
     try {
@@ -116,7 +55,6 @@ function resolveFilePath(name: string, cwd: string): string {
     } catch {}
   }
 
-  // Shallow recursive search in the top-level search dirs.
   for (const dir of searchDirs) {
     if (!dir || !fs.existsSync(dir)) continue
     try {
@@ -133,103 +71,135 @@ function resolveFilePath(name: string, cwd: string): string {
   )
 }
 
-// ─── Tool definition ────────────────────────────────────────────────────────
-const seeImageTool = tool({
-  description:
-    'See an image/screenshot that the current model cannot view. Use when the user attaches an image and you get a "this model does not support image input" / "Cannot read" error, or when a screenshot/image is referenced ("see this", "can you see", .png/.jpg). Routes the image to a vision-capable model and returns a detailed textual description you can reason about as if you saw it. Pass filePath as an absolute path OR a bare filename (auto-located in macOS screenshot temp dirs, ~/Desktop, ~/Downloads, cwd).',
-  args: {
-    filePath: tool.schema
-      .string()
-      .describe(
-        'Path to the image. Absolute path, or a bare filename like "Screenshot 2026-06-18 at 17.32.24.png" to auto-locate.',
-      ),
-    question: tool.schema
-      .string()
-      .optional()
-      .describe(
-        "Optional specific question about the image. Defaults to a general detailed description.",
-      ),
-  },
-  async execute(args, context) {
-    const fullPath = resolveFilePath(args.filePath, context.directory)
-    const ext = path.extname(fullPath).slice(1).toLowerCase()
-    const mediaType = EXT_MEDIA[ext] || "image/png"
+async function seeImageViaSDK(
+  client: any,
+  dataUrl: string,
+  mediaType: string,
+  prompt: string,
+): Promise<{ text: string; model: string; provider: string }> {
+  const envProvider = process.env.SEE_IMAGE_PROVIDER
+  const envModel = process.env.SEE_IMAGE_MODEL
+  const candidates: Array<{ providerID: string; modelID: string }> = []
+  if (envProvider && envModel) {
+    candidates.push({ providerID: envProvider, modelID: envModel })
+  }
+  candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
+  candidates.push({ providerID: "opencode", modelID: "big-pickle" })
 
-    const buf = fs.readFileSync(fullPath)
-    const b64 = Buffer.from(buf).toString("base64")
+  const errors: string[] = []
 
-    const prompt =
-      args.question && args.question.trim().length > 0
-        ? args.question
-        : "Describe this image in detail. If it is a screenshot, describe the UI, text content, and layout precisely. This description will be used by another model to answer the user, so be thorough and accurate."
+  for (const { providerID, modelID } of candidates) {
+    let sessionID: string | undefined
+    try {
+      const sessionRes = await client.session.create({ body: {} })
+      sessionID = sessionRes.data?.id
+      if (!sessionID) {
+        errors.push(`${providerID}/${modelID}: no session ID`)
+        continue
+      }
 
-    const { key, endpoint, model } = resolveAuth()
-
-    const body = {
-      model,
-      max_tokens: 2048,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: { type: "base64", media_type: mediaType, data: b64 },
-            },
+      const result = await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          model: { providerID, modelID },
+          parts: [
+            { type: "file", mime: mediaType, url: dataUrl },
             { type: "text", text: prompt },
           ],
+          tools: {},
+          system:
+            "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
         },
-      ],
-    }
+      })
 
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "x-api-key": key,
-        "anthropic-version": API_VERSION,
-        "content-type": "application/json",
-        "user-agent": USER_AGENT,
+      const parts = result.data?.parts ?? []
+      const text = (parts as any[])
+        .filter((p: any) => p.type === "text")
+        .map((p: any) => p.text)
+        .filter((t: any) => typeof t === "string" && t.length > 0)
+        .join("\n")
+        .trim()
+
+      if (text) {
+        return { text, model: modelID, provider: providerID }
+      }
+      errors.push(`${providerID}/${modelID}: no text in response`)
+    } catch (e: any) {
+      errors.push(`${providerID}/${modelID}: ${e?.message ?? e}`)
+    } finally {
+      if (sessionID) {
+        await client.session
+          .delete({ path: { id: sessionID } })
+          .catch(() => {})
+      }
+    }
+  }
+
+  throw new Error(
+    `see_image: SDK vision call failed for all candidates. ${errors.join("; ")}`,
+  )
+}
+
+async function seeImageViaHTTP(
+  b64: string,
+  mediaType: string,
+  prompt: string,
+): Promise<{ text: string; model: string; provider: string }> {
+  const key = process.env.SEE_IMAGE_API_KEY!
+  const body = {
+    model: MODEL,
+    max_tokens: 2048,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: mediaType, data: b64 },
+          },
+          { type: "text", text: prompt },
+        ],
       },
-      body: JSON.stringify(body),
-    })
+    ],
+  }
 
-    if (!res.ok) {
-      const errText = await res.text()
-      throw new Error(
-        `see_image: vision call to "${model}" @ ${endpoint} failed: HTTP ${res.status} — ${errText.slice(0, 300)}`,
-      )
-    }
+  const res = await fetch(ENDPOINT, {
+    method: "POST",
+    headers: {
+      "x-api-key": key,
+      "anthropic-version": API_VERSION,
+      "content-type": "application/json",
+      "user-agent": USER_AGENT,
+    },
+    body: JSON.stringify(body),
+  })
 
-    const data: any = await res.json()
-    // Join all text blocks, skipping thinking/signature blocks (some models
-    // like qwen/minimax-m2.7 emit reasoning before the answer).
-    const text = data?.content
-      ?.map((c: any) => c.text)
-      .filter((t: any) => typeof t === "string" && t.length > 0)
-      .join("\n")
-      .trim()
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(
+      `see_image: HTTP vision call to "${MODEL}" failed: HTTP ${res.status}, ${errText.slice(0, 300)}`,
+    )
+  }
 
-    if (!text) {
-      throw new Error(
-        `see_image: model "${model}" returned no text. Response: ${JSON.stringify(data).slice(0, 300)}`,
-      )
-    }
+  const data: any = await res.json()
+  const text = data?.content
+    ?.map((c: any) => c.text)
+    .filter((t: any) => typeof t === "string" && t.length > 0)
+    .join("\n")
+    .trim()
 
-    context.metadata({
-      title: `see_image: ${path.basename(fullPath)}`,
-      metadata: { model, endpoint, file: fullPath },
-    })
+  if (!text) {
+    throw new Error(
+      `see_image: model "${MODEL}" returned no text. Response: ${JSON.stringify(data).slice(0, 300)}`,
+    )
+  }
 
-    return text
-  },
-})
+  return { text, model: MODEL, provider: PROVIDER_ID }
+}
 
-// ─── System prompt injection (the "skill") ──────────────────────────────────
-// Injected via experimental.chat.system.transform so the triggering logic
-// ships with the plugin — no separate SKILL.md install needed.
-const SYSTEM_INSTRUCTIONS = `# See Image (vision bridge) — opencode-see-image plugin
+const SYSTEM_INSTRUCTIONS = `# See Image (vision bridge), opencode-see-image plugin
 
-You have access to a \`see_image\` tool. The current model may not support image input directly. When a user attaches a screenshot or image, opencode rejects it and you only receive an error string containing the **filename** — no path, no pixels. Use \`see_image\` to actually view it.
+You have access to a \`see_image\` tool. The current model may not support image input directly. When a user attaches a screenshot or image, opencode rejects it and you only receive an error string containing the **filename**, no path, no pixels. Use \`see_image\` to actually view it.
 
 ## When to use \`see_image\`
 
@@ -238,13 +208,13 @@ Use ONLY when one of these is true:
 2. The user references an image/screenshot they expect you to see ("see this", "look at this", "can you see this", ".png"/".jpg")
 3. The user pastes an image path they want you to inspect
 
-Do NOT use \`see_image\` for reading text files — use the \`read\` tool for those.
+Do NOT use \`see_image\` for reading text files, use the \`read\` tool for those.
 
 ## How to use it
 
 1. **Extract the filename** from the error string (the quoted name), or use the path the user gave.
 2. **Call \`see_image\`** with \`filePath\` set to the bare filename (it auto-locates) or an absolute path. Pass an optional \`question\` if the user asked something specific.
-3. **Answer using the returned description** as if you saw the image. Be natural — don't mention that you used another model unless asked.
+3. **Answer using the returned description** as if you saw the image. Be natural, don't mention that you used another model unless asked.
 
 ## Important
 
@@ -252,18 +222,11 @@ Do NOT use \`see_image\` for reading text files — use the \`read\` tool for th
 - If the tool cannot find the file, tell the user the filename and ask for a full path or to drag the file into the project directory.
 - To inspect a specific detail, pass a targeted \`question\` (e.g. "What error is shown in the terminal?").`
 
-// ─── Auto-update ────────────────────────────────────────────────────────────
-// Runs once at plugin init (async, non-blocking). Checks npm for a newer
-// version, runs `bun update` in the opencode plugin cache if available, and
-// toasts the user to restart opencode to apply. Never throws — failures are
-// logged and swallowed so the plugin always loads.
-
 const PKG_NAME = "opencode-see-image"
 const REGISTRY_LATEST = `https://registry.npmjs.org/${PKG_NAME}/latest`
 
 function currentVersion(): string | null {
   try {
-    // import.meta.url points at this module inside the bun cache.
     const here = new URL(".", import.meta.url)
     const pkgPath = new URL("package.json", here)
     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"))
@@ -291,41 +254,25 @@ async function maybeAutoUpdate(
   log: (msg: string, level?: string) => void,
 ) {
   const current = currentVersion()
-  if (!current) {
-    log("could not determine current version; skipping update check", "debug")
-    return
-  }
+  if (!current) return
 
   let latest: string
   try {
     const res = await fetch(REGISTRY_LATEST, {
       headers: { accept: "application/json" },
     })
-    if (!res.ok) {
-      log(`registry fetch returned HTTP ${res.status}`, "debug")
-      return
-    }
+    if (!res.ok) return
     const data: any = await res.json()
     latest = data?.version
-    if (!latest) {
-      log("registry response had no version field", "debug")
-      return
-    }
-  } catch (e: any) {
-    log(`registry fetch failed: ${e?.message ?? e}`, "debug")
+    if (!latest) return
+  } catch {
     return
   }
 
-  if (!semverGt(latest, current)) {
-    log(`up to date (${current})`, "debug")
-    return
-  }
+  if (!semverGt(latest, current)) return
 
-  log(`update available: ${current} → ${latest}; running bun update`, "info")
+  log(`update available: ${current} -> ${latest}; running bun update`, "info")
 
-  // Update the plugin in opencode's cache. --no-save keeps the lockfile
-  // resolution intact while still pulling the new tarball. We cd into the
-  // cache dir because bun operates on the nearest package.json/lockfile.
   const cacheDir = path.join(os.homedir(), ".cache/opencode")
   try {
     await $`cd ${cacheDir} && bun update ${PKG_NAME} --no-save`.quiet()
@@ -334,36 +281,79 @@ async function maybeAutoUpdate(
     return
   }
 
-  // Tell the user to restart. Toast is non-blocking; if it fails, we log.
   try {
     await client?.tui?.showToast?.({
       body: {
-        message: `${PKG_NAME} updated to ${latest} — restart opencode to apply`,
+        message: `${PKG_NAME} updated to ${latest}, restart opencode to apply`,
         variant: "success",
       },
     })
   } catch {
-    log(`update applied: ${current} → ${latest}; restart opencode to load`, "info")
+    log(`update applied: ${current} -> ${latest}; restart opencode to load`, "info")
   }
 }
 
-// ─── Plugin export ──────────────────────────────────────────────────────────
 const SeeImagePlugin: Plugin = async (ctx) => {
   const { client, $ } = ctx
 
   const log = (message: string, level: string = "info") => {
     try {
-      client?.app?.log?.({
-        body: { service: PKG_NAME, level, message },
-      })
-    } catch {
-      // logging is best-effort
-    }
+      client?.app?.log?.({ body: { service: PKG_NAME, level, message } })
+    } catch {}
   }
 
-  // Fire-and-forget the update check. Never awaited so plugin init is not
-  // delayed by network. Errors are swallowed inside.
   maybeAutoUpdate(client, $, log).catch(() => {})
+
+  const seeImageTool = tool({
+    description:
+      'See an image/screenshot that the current model cannot view. Use when the user attaches an image and you get a "this model does not support image input" / "Cannot read" error, or when a screenshot/image is referenced ("see this", "can you see", .png/.jpg). Routes the image to a vision-capable model and returns a detailed textual description you can reason about as if you saw it. Pass filePath as an absolute path OR a bare filename (auto-located in macOS screenshot temp dirs, ~/Desktop, ~/Downloads, cwd).',
+    args: {
+      filePath: tool.schema
+        .string()
+        .describe(
+          'Path to the image. Absolute path, or a bare filename like "Screenshot 2026-06-18 at 17.32.24.png" to auto-locate.',
+        ),
+      question: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Optional specific question about the image. Defaults to a general detailed description.",
+        ),
+    },
+    async execute(args, context) {
+      const fullPath = resolveFilePath(args.filePath, context.directory)
+      const ext = path.extname(fullPath).slice(1).toLowerCase()
+      const mediaType = EXT_MEDIA[ext] || "image/png"
+
+      const buf = fs.readFileSync(fullPath)
+      const b64 = Buffer.from(buf).toString("base64")
+      const dataUrl = `data:${mediaType};base64,${b64}`
+
+      const prompt =
+        args.question && args.question.trim().length > 0
+          ? args.question
+          : "Describe this image in detail. If it is a screenshot, describe the UI, text content, and layout precisely. This description will be used by another model to answer the user, so be thorough and accurate."
+
+      let result: { text: string; model: string; provider: string }
+
+      if (process.env.SEE_IMAGE_API_KEY) {
+        result = await seeImageViaHTTP(b64, mediaType, prompt)
+      } else {
+        result = await seeImageViaSDK(client, dataUrl, mediaType, prompt)
+      }
+
+      context.metadata({
+        title: `see_image: ${path.basename(fullPath)}`,
+        metadata: {
+          model: result.model,
+          provider: result.provider,
+          file: fullPath,
+        },
+      })
+
+      return result.text
+    },
+  })
 
   return {
     tool: {
