@@ -151,6 +151,11 @@ Then restart opencode. (No bun required, this uses opencode's own bun.)
 "plugin": ["opencode-see-image@0.4.2"]
 ```
 
+## Limitations
+
+- **Clipboard pastes don't work** — when you paste an image from clipboard (Cmd+V), opencode processes it in-memory but discards it before writing to disk if the model doesn't support image input. The plugin can't access it. **Drag screenshots instead**, or save the clipboard image to a file first.
+- **macOS only** — file search locations target macOS screenshot temp dirs. Linux/Windows users need to pass absolute paths.
+
 ## File search locations
 
 When opencode rejects an image attachment, the model only receives a bare filename. `see_image` searches these locations in order:

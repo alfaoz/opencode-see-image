@@ -64,9 +64,19 @@ function resolveFilePath(name: string, cwd: string): string {
     } catch {}
   }
 
-  const searched = searchDirs.filter(Boolean).join(", ")
+  const nsirdCount = searchDirs.filter((d) =>
+    String(d).includes("NSIRD_screencaptureui"),
+  ).length
+  const summary = [
+    `${nsirdCount} macOS screenshot temp dirs`,
+    "~/Desktop",
+    "~/Downloads",
+    cwd,
+  ]
+    .filter(Boolean)
+    .join(", ")
   throw new Error(
-    `see_image: could not find "${name}". Searched: ${searched}. ` +
+    `see_image: could not find "${name}". Searched ${summary}. ` +
       `Pass an absolute filePath instead.`,
   )
 }
