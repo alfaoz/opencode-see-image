@@ -449,15 +449,11 @@ async function maybeAutoUpdate(
     }
   }
 
+  log(`update applied: ${current} -> ${latest}; restart opencode to load`, "info")
   try {
-    await client?.tui?.showToast?.({
-      body: {
-        message: `${PKG_NAME} updated to ${latest}, restart opencode to apply`,
-        variant: "success",
-      },
-    })
+    await client?.tui?.showToast?.({ body: { message: `${PKG_NAME} updated to ${latest}, restart opencode to apply`, variant: "success" } })
   } catch {
-    log(`update applied: ${current} -> ${latest}; restart opencode to load`, "info")
+    // toast is non-critical, log already captured
   }
 }
 
