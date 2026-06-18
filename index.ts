@@ -2,6 +2,7 @@ import { tool } from "@opencode-ai/plugin"
 import path from "path"
 import os from "os"
 import fs from "fs"
+import { Database } from "bun:sqlite"
 import type { Plugin } from "@opencode-ai/plugin"
 
 const ENDPOINT =
@@ -23,61 +24,125 @@ const EXT_MEDIA: Record<string, string> = {
   bmp: "image/bmp",
 }
 
-function resolveFilePath(name: string, cwd: string): string {
-  if (path.isAbsolute(name) && fs.existsSync(name)) return name
+type ResolvedImage = {
+  dataUrl: string
+  mediaType: string
+  source: string
+}
 
-  const resolved = path.resolve(cwd, name)
-  if (fs.existsSync(resolved)) return resolved
+function opencodeDbPath(): string {
+  const dataDir =
+    process.env.OPENCODE_DATA_DIR ||
+    process.env.XDG_DATA_HOME ||
+    path.join(os.homedir(), ".local/share/opencode")
+  return path.join(dataDir, "opencode.db")
+}
 
-  const tmpdir = process.env.TMPDIR || "/tmp"
-  const searchDirs: string[] = []
+function resolveFromDb(filename: string): ResolvedImage | null {
+  const dbPath = opencodeDbPath()
+  if (!fs.existsSync(dbPath)) return null
 
-  const tempItems = path.join(tmpdir, "TemporaryItems")
-  if (fs.existsSync(tempItems)) {
-    try {
-      for (const sub of fs.readdirSync(tempItems, { withFileTypes: true })) {
-        if (sub.isDirectory() && sub.name.startsWith("NSIRD_screencaptureui")) {
-          searchDirs.push(path.join(tempItems, sub.name))
+  try {
+    const db = new Database(dbPath, { readonly: true })
+    const rows = db
+      .query(
+        `SELECT data FROM part
+         WHERE json_extract(data, '$.type') = 'file'
+           AND json_extract(data, '$.filename') = ?
+         ORDER BY time_created DESC LIMIT 1`,
+      )
+      .all(filename) as Array<{ data: string }>
+
+    db.close()
+
+    if (!rows.length) return null
+    const part = JSON.parse(rows[0].data)
+    const url: string = part.url || ""
+    if (!url.startsWith("data:")) return null
+
+    return {
+      dataUrl: url,
+      mediaType: part.mime || "image/png",
+      source: "opencode-db",
+    }
+  } catch {
+    return null
+  }
+}
+
+function resolveFromFilesystem(
+  name: string,
+  cwd: string,
+): ResolvedImage | null {
+  let absPath: string | null = null
+
+  if (path.isAbsolute(name) && fs.existsSync(name)) {
+    absPath = name
+  } else {
+    const resolved = path.resolve(cwd, name)
+    if (fs.existsSync(resolved)) absPath = resolved
+  }
+
+  if (!absPath) {
+    const tmpdir = process.env.TMPDIR || "/tmp"
+    const searchDirs: string[] = []
+    const tempItems = path.join(tmpdir, "TemporaryItems")
+    if (fs.existsSync(tempItems)) {
+      try {
+        for (const sub of fs.readdirSync(tempItems, { withFileTypes: true })) {
+          if (
+            sub.isDirectory() &&
+            sub.name.startsWith("NSIRD_screencaptureui")
+          ) {
+            searchDirs.push(path.join(tempItems, sub.name))
+          }
         }
-      }
-    } catch {}
-  }
-  searchDirs.push(tempItems)
-  searchDirs.push(path.join(os.homedir(), "Desktop"))
-  searchDirs.push(path.join(os.homedir(), "Downloads"))
-  searchDirs.push(cwd)
+      } catch {}
+    }
+    searchDirs.push(tempItems)
+    searchDirs.push(path.join(os.homedir(), "Desktop"))
+    searchDirs.push(path.join(os.homedir(), "Downloads"))
+    searchDirs.push(cwd)
 
-  for (const dir of searchDirs) {
-    if (!dir) continue
-    try {
-      const full = path.join(dir, name)
-      if (fs.existsSync(full)) return full
-    } catch {}
-  }
-
-  for (const dir of searchDirs) {
-    if (!dir || !fs.existsSync(dir)) continue
-    try {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name === name) return path.join(dir, name)
-      }
-    } catch {}
+    for (const dir of searchDirs) {
+      if (!dir) continue
+      try {
+        const full = path.join(dir, name)
+        if (fs.existsSync(full)) {
+          absPath = full
+          break
+        }
+      } catch {}
+    }
   }
 
-  const nsirdCount = searchDirs.filter((d) =>
-    String(d).includes("NSIRD_screencaptureui"),
-  ).length
-  const summary = [
-    `${nsirdCount} macOS screenshot temp dirs`,
-    "~/Desktop",
-    "~/Downloads",
-    cwd,
-  ]
-    .filter(Boolean)
-    .join(", ")
+  if (!absPath || !fs.existsSync(absPath)) return null
+
+  const ext = path.extname(absPath).slice(1).toLowerCase()
+  const mediaType = EXT_MEDIA[ext] || "image/png"
+  const b64 = Buffer.from(fs.readFileSync(absPath)).toString("base64")
+
+  return {
+    dataUrl: `data:${mediaType};base64,${b64}`,
+    mediaType,
+    source: absPath,
+  }
+}
+
+function resolveImage(name: string, cwd: string): ResolvedImage {
+  if (name === "clipboard") {
+    const fromDb = resolveFromDb("")
+    if (fromDb) return fromDb
+  }
+
+  const fromDb = resolveFromDb(name)
+  if (fromDb) return fromDb
+
+  const fromFs = resolveFromFilesystem(name, cwd)
+  if (fromFs) return fromFs
+
   throw new Error(
-    `see_image: could not find "${name}". Searched ${summary}. ` +
-      `Pass an absolute filePath instead.`,
+    `see_image: could not find "${name}". Searched opencode DB and filesystem (cwd, ~/Desktop, ~/Downloads, temp). Pass an absolute filePath instead.`,
   )
 }
 
@@ -286,16 +351,12 @@ async function maybeAutoUpdate(
 
   log(`update available: ${current} -> ${latest}; updating`, "info")
 
-  // Use opencode's own plugin command to re-resolve from npm. This uses
-  // opencode's bundled bun, so it works even when bun isn't installed
-  // globally on the user's PATH.
   const opencodeBin =
     process.env.OPENCODE_BIN ||
     path.join(os.homedir(), ".opencode/bin/opencode")
   try {
     await $`${opencodeBin} plugin ${PKG_NAME} --force --global`.quiet()
   } catch (e: any) {
-    // Fallback: try bare `opencode` on PATH
     try {
       await $`opencode plugin ${PKG_NAME} --force --global`.quiet()
     } catch (e2: any) {
@@ -329,7 +390,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
 
   const seeImageTool = tool({
     description:
-      'See an image/screenshot that the current model cannot view. Use when the user attaches an image and you get a "this model does not support image input" / "Cannot read" error, or when a screenshot/image is referenced ("see this", "can you see", .png/.jpg). Routes the image to a vision-capable model and returns a detailed textual description you can reason about as if you saw it. Pass filePath as an absolute path OR a bare filename (auto-located in macOS screenshot temp dirs, ~/Desktop, ~/Downloads, cwd).',
+      'See an image/screenshot that the current model cannot view. Use when the user attaches an image and you get a "this model does not support image input" / "Cannot read" error, or when a screenshot/image is referenced ("see this", "can you see", .png/.jpg). Routes the image to a vision-capable model and returns a detailed textual description you can reason about as if you saw it. Pass filePath as an absolute path OR a bare filename (auto-located from opencode DB or filesystem).',
     args: {
       filePath: tool.schema
         .string()
@@ -344,13 +405,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
         ),
     },
     async execute(args, context) {
-      const fullPath = resolveFilePath(args.filePath, context.directory)
-      const ext = path.extname(fullPath).slice(1).toLowerCase()
-      const mediaType = EXT_MEDIA[ext] || "image/png"
-
-      const buf = fs.readFileSync(fullPath)
-      const b64 = Buffer.from(buf).toString("base64")
-      const dataUrl = `data:${mediaType};base64,${b64}`
+      const resolved = resolveImage(args.filePath, context.directory)
 
       const prompt =
         args.question && args.question.trim().length > 0
@@ -360,17 +415,24 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       let result: { text: string; model: string; provider: string }
 
       if (process.env.SEE_IMAGE_API_KEY) {
-        result = await seeImageViaHTTP(b64, mediaType, prompt, context.abort)
+        const b64 = resolved.dataUrl.split(",")[1] || ""
+        result = await seeImageViaHTTP(b64, resolved.mediaType, prompt, context.abort)
       } else {
-        result = await seeImageViaSDK(client, dataUrl, mediaType, prompt, context.abort)
+        result = await seeImageViaSDK(
+          client,
+          resolved.dataUrl,
+          resolved.mediaType,
+          prompt,
+          context.abort,
+        )
       }
 
       context.metadata({
-        title: `see_image: ${path.basename(fullPath)}`,
+        title: `see_image: ${args.filePath}`,
         metadata: {
           model: result.model,
           provider: result.provider,
-          file: fullPath,
+          source: resolved.source,
         },
       })
 

@@ -70,9 +70,9 @@ plugin's system-prompt instructions tell the model to call see_image
         │
         ▼
 see_image tool:
-  1. locates the file (macOS screenshot temp dirs, ~/Desktop, ~/Downloads, cwd)
-  2. base64-encodes it
-  3. routes it to the vision model via opencode's SDK (or direct HTTP if SEE_IMAGE_API_KEY is set)
+  1. queries opencode's SQLite DB for the image (handles clipboard pastes, dragged files, screenshots)
+  2. falls back to filesystem search if not in DB
+  3. sends the image to the vision model via opencode's SDK
   4. returns the textual description
         │
         ▼
@@ -153,8 +153,7 @@ Then restart opencode. (No bun required, this uses opencode's own bun.)
 
 ## Limitations
 
-- **Clipboard pastes don't work** — when you paste an image from clipboard (Cmd+V), opencode processes it in-memory but discards it before writing to disk if the model doesn't support image input. The plugin can't access it. **Drag screenshots instead**, or save the clipboard image to a file first.
-- **macOS only** — file search locations target macOS screenshot temp dirs. Linux/Windows users need to pass absolute paths.
+- **macOS-only filesystem search** — the filesystem fallback targets macOS screenshot temp dirs. Linux/Windows users should rely on the DB lookup (which is cross-platform) or pass absolute paths.
 
 ## File search locations
 
