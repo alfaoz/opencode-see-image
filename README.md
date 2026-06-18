@@ -6,6 +6,14 @@ When a user attaches a screenshot to a text-only model, opencode rejects it with
 
 ## Install
 
+**Option A, one command (recommended):**
+```bash
+opencode plugin opencode-see-image --global
+```
+This installs the package and adds it to your config. Then restart opencode.
+
+**Option B, edit config manually:**
+
 Add the plugin to your opencode config:
 
 ```jsonc
