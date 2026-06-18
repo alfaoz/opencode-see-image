@@ -38,7 +38,10 @@ function opencodeDbPath(): string {
   return path.join(dataDir, "opencode.db")
 }
 
-function resolveFromDb(filename: string): ResolvedImage | null {
+function resolveFromDb(
+  filename: string,
+  sessionID?: string,
+): ResolvedImage | null {
   const dbPath = opencodeDbPath()
   if (!fs.existsSync(dbPath)) return null
 
@@ -47,26 +50,50 @@ function resolveFromDb(filename: string): ResolvedImage | null {
     let rows: Array<{ data: string }>
 
     if (!filename || filename === "clipboard") {
-      // No filename: get the most recent file part (handles clipboard pastes
-      // where opencode labels the error as "clipboard" but the DB part has
-      // the original filename).
-      rows = db
-        .query(
-          `SELECT data FROM part
-           WHERE json_extract(data, '$.type') = 'file'
-             AND json_extract(data, '$.url') LIKE 'data:%'
-           ORDER BY time_created DESC LIMIT 1`,
-        )
-        .all() as Array<{ data: string }>
+      // No filename: get the most recent file part, scoped to the current
+      // session if known so we don't grab an image pasted into a different
+      // conversation.
+      if (sessionID) {
+        rows = db
+          .query(
+            `SELECT data FROM part
+             WHERE session_id = ?
+               AND json_extract(data, '$.type') = 'file'
+               AND json_extract(data, '$.url') LIKE 'data:%'
+             ORDER BY time_created DESC LIMIT 1`,
+          )
+          .all(sessionID) as Array<{ data: string }>
+      } else {
+        rows = db
+          .query(
+            `SELECT data FROM part
+             WHERE json_extract(data, '$.type') = 'file'
+               AND json_extract(data, '$.url') LIKE 'data:%'
+             ORDER BY time_created DESC LIMIT 1`,
+          )
+          .all() as Array<{ data: string }>
+      }
     } else {
-      rows = db
-        .query(
-          `SELECT data FROM part
-           WHERE json_extract(data, '$.type') = 'file'
-             AND json_extract(data, '$.filename') = ?
-           ORDER BY time_created DESC LIMIT 1`,
-        )
-        .all(filename) as Array<{ data: string }>
+      if (sessionID) {
+        rows = db
+          .query(
+            `SELECT data FROM part
+             WHERE session_id = ?
+               AND json_extract(data, '$.type') = 'file'
+               AND json_extract(data, '$.filename') = ?
+             ORDER BY time_created DESC LIMIT 1`,
+          )
+          .all(sessionID, filename) as Array<{ data: string }>
+      } else {
+        rows = db
+          .query(
+            `SELECT data FROM part
+             WHERE json_extract(data, '$.type') = 'file'
+               AND json_extract(data, '$.filename') = ?
+             ORDER BY time_created DESC LIMIT 1`,
+          )
+          .all(filename) as Array<{ data: string }>
+      }
     }
 
     db.close()
@@ -145,10 +172,11 @@ function resolveFromFilesystem(
   }
 }
 
-function resolveImage(name: string, cwd: string): ResolvedImage {
+function resolveImage(name: string, cwd: string, sessionID?: string): ResolvedImage {
   // DB first: handles clipboard pastes, dragged files, screenshots.
   // For "clipboard" or empty name, gets the most recent file part.
-  const fromDb = resolveFromDb(name)
+  // Scoped to the current session if known.
+  const fromDb = resolveFromDb(name, sessionID)
   if (fromDb) return fromDb
 
   // Filesystem fallback for files not yet in the DB.
@@ -419,7 +447,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
         ),
     },
     async execute(args, context) {
-      const resolved = resolveImage(args.filePath, context.directory)
+      const resolved = resolveImage(args.filePath, context.directory, context.sessionID)
 
       const prompt =
         args.question && args.question.trim().length > 0
