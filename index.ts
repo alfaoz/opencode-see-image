@@ -346,14 +346,46 @@ const PKG_NAME = "opencode-see-image"
 const REGISTRY_LATEST = `https://registry.npmjs.org/${PKG_NAME}/latest`
 
 function currentVersion(): string | null {
+  // Try import.meta.url first (works when not bundled)
   try {
     const here = new URL(".", import.meta.url)
     const pkgPath = new URL("package.json", here)
     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"))
-    return pkg.version ?? null
-  } catch {
-    return null
-  }
+    if (pkg.version) return pkg.version
+  } catch {}
+
+  // Fallback: walk up from import.meta.url looking for package.json with our name
+  try {
+    let dir = new URL(".", import.meta.url)
+    for (let i = 0; i < 10; i++) {
+      const pkgPath = new URL("package.json", dir)
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"))
+        if (pkg.name === PKG_NAME && pkg.version) return pkg.version
+      } catch {}
+      const parent = new URL("../", dir)
+      if (parent.href === dir.href) break
+      dir = parent
+    }
+  } catch {}
+
+  // Last resort: check the known opencode cache paths
+  try {
+    const cacheDir = path.join(os.homedir(), ".cache/opencode/packages")
+    if (fs.existsSync(cacheDir)) {
+      for (const sub of fs.readdirSync(cacheDir)) {
+        if (sub.startsWith(PKG_NAME)) {
+          const pkgPath = path.join(cacheDir, sub, "node_modules", PKG_NAME, "package.json")
+          try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"))
+            if (pkg.version) return pkg.version
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+
+  return null
 }
 
 function semverGt(a: string, b: string): boolean {
@@ -373,8 +405,13 @@ async function maybeAutoUpdate(
   $: any,
   log: (msg: string, level?: string) => void,
 ) {
+  log(`starting update check`, "debug")
   const current = currentVersion()
-  if (!current) return
+  if (!current) {
+    log(`could not determine current version`, "warn")
+    return
+  }
+  log(`current version: ${current}`, "debug")
 
   let latest: string
   try {
@@ -428,7 +465,10 @@ const SeeImagePlugin: Plugin = async (ctx) => {
     } catch {}
   }
 
-  maybeAutoUpdate(client, $, log).catch(() => {})
+  log(`plugin initialized`, "info")
+  maybeAutoUpdate(client, $, log).catch((e) => {
+    log(`auto-update error: ${e?.message ?? e}`, "warn")
+  })
 
   const seeImageTool = tool({
     description:
