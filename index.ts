@@ -435,14 +435,15 @@ async function maybeAutoUpdate(
 
   log(`update available: ${current} -> ${latest}; updating`, "info")
 
+  const specifier = `${PKG_NAME}@${latest}`
   const opencodeBin =
     process.env.OPENCODE_BIN ||
     path.join(os.homedir(), ".opencode/bin/opencode")
   try {
-    await $`${opencodeBin} plugin ${PKG_NAME} --force --global`.quiet()
+    await $`${opencodeBin} plugin ${specifier} --force --global`.quiet()
   } catch (e: any) {
     try {
-      await $`opencode plugin ${PKG_NAME} --force --global`.quiet()
+      await $`opencode plugin ${specifier} --force --global`.quiet()
     } catch (e2: any) {
       log(`plugin update failed: ${e2?.message ?? e2}`, "warn")
       return
