@@ -28,26 +28,53 @@ const EXT_MEDIA: Record<string, string> = {
 }
 
 // ─── Auth ───────────────────────────────────────────────────────────────────
-function readApiKey(): string {
-  // 1. Explicit env var wins.
-  if (process.env.SEE_IMAGE_API_KEY) return process.env.SEE_IMAGE_API_KEY
+// Resolves a usable API key + the endpoint + model to use. Falls back through
+// a chain so users with any connected opencode subscription (paid opencode-go
+// or free opencode Zen) get a working default with zero config.
+function resolveAuth(): { key: string; endpoint: string; model: string } {
+  // 1. Explicit env vars win outright.
+  if (process.env.SEE_IMAGE_API_KEY) {
+    return { key: process.env.SEE_IMAGE_API_KEY, endpoint: ENDPOINT, model: MODEL }
+  }
 
-  // 2. Read from opencode's auth store (~/.local/share/opencode/auth.json).
+  // 2. Walk opencode's auth store and try the configured provider first,
+  //    then a curated fallback chain (paid → free).
   const authPath = path.join(os.homedir(), ".local/share/opencode/auth.json")
+  let auth: any = {}
   try {
-    const auth = JSON.parse(fs.readFileSync(authPath, "utf8"))
-    const entry = auth[PROVIDER_ID]
-    if (entry && (entry.key || entry.access)) {
-      return entry.key || entry.access
-    }
+    auth = JSON.parse(fs.readFileSync(authPath, "utf8"))
   } catch {
-    // fall through to error
+    // ignore — handled by the empty-auth path below
+  }
+
+  // Each candidate: [providerId, endpoint, defaultModel]
+  const candidates: Array<[string, string, string]> = [
+    [PROVIDER_ID, ENDPOINT, MODEL],
+    // Free fallback: OpenCode Zen's big-pickle supports vision at no cost.
+    ["opencode", "https://opencode.ai/zen/v1/messages", "big-pickle"],
+    // Paid fallbacks on opencode-go:
+    ["opencode-go", "https://opencode.ai/zen/go/v1/messages", "minimax-m3"],
+  ]
+
+  const tried: string[] = []
+  for (const [pid, ep, mdl] of candidates) {
+    const entry = auth[pid]
+    const k = entry && (entry.key || entry.access)
+    if (k) {
+      // If the user pinned PROVIDER_ID but not MODEL, honor the candidate's
+      // default model only when provider matches the pinned one; otherwise
+      // keep the configured MODEL (may be set via env).
+      const useModel =
+        pid === PROVIDER_ID || !process.env.SEE_IMAGE_MODEL ? mdl : MODEL
+      return { key: k, endpoint: ep, model: useModel }
+    }
+    tried.push(pid)
   }
 
   throw new Error(
-    `see_image: no API key. Either run /connect for "${PROVIDER_ID}" in opencode, ` +
-      `or set SEE_IMAGE_API_KEY, or set SEE_IMAGE_PROVIDER to a connected provider ID. ` +
-      `(Looked in ${authPath} for key "${PROVIDER_ID}".)`,
+    `see_image: no API key. Connect a provider in opencode via /connect — ` +
+      `either "opencode-go" (paid, fast MiniMax M3) or "opencode" (free, big-pickle). ` +
+      `Or set SEE_IMAGE_API_KEY explicitly. (Checked providers: ${tried.join(", ") || "none"} in ${authPath}.)`,
   )
 }
 
@@ -136,8 +163,10 @@ const seeImageTool = tool({
         ? args.question
         : "Describe this image in detail. If it is a screenshot, describe the UI, text content, and layout precisely. This description will be used by another model to answer the user, so be thorough and accurate."
 
+    const { key, endpoint, model } = resolveAuth()
+
     const body = {
-      model: MODEL,
+      model,
       max_tokens: 2048,
       messages: [
         {
@@ -153,8 +182,7 @@ const seeImageTool = tool({
       ],
     }
 
-    const key = readApiKey()
-    const res = await fetch(ENDPOINT, {
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: {
         "x-api-key": key,
@@ -168,7 +196,7 @@ const seeImageTool = tool({
     if (!res.ok) {
       const errText = await res.text()
       throw new Error(
-        `see_image: vision call to "${MODEL}" failed: HTTP ${res.status} — ${errText.slice(0, 300)}`,
+        `see_image: vision call to "${model}" @ ${endpoint} failed: HTTP ${res.status} — ${errText.slice(0, 300)}`,
       )
     }
 
@@ -183,13 +211,13 @@ const seeImageTool = tool({
 
     if (!text) {
       throw new Error(
-        `see_image: model "${MODEL}" returned no text. Response: ${JSON.stringify(data).slice(0, 300)}`,
+        `see_image: model "${model}" returned no text. Response: ${JSON.stringify(data).slice(0, 300)}`,
       )
     }
 
     context.metadata({
       title: `see_image: ${path.basename(fullPath)}`,
-      metadata: { model: MODEL, provider: PROVIDER_ID, file: fullPath },
+      metadata: { model, endpoint, file: fullPath },
     })
 
     return text

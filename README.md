@@ -16,31 +16,29 @@ Add the plugin to your opencode config:
 }
 ```
 
-## Install via your agent
-
-Paste this prompt to your opencode agent
-
-```
-Install the opencode-see-image plugin so I can send you screenshots. Do this:
-
-1. Edit ~/.config/opencode/opencode.jsonc (create it if missing). Preserve any existing fields and the $schema. Add "opencode-see-image" to the "plugin" array. If "plugin" doesn't exist, add it as ["opencode-see-image"].
-2. Check that opencode-go is connected by looking for ~/.local/share/opencode/auth.json with an "opencode-go" entry. If it's missing, tell me to run /connect and select opencode-go (key from opencode.ai/auth).
-3. Tell me to quit and restart opencode for the plugin to load.
-
-After I restart and attach a screenshot, you should call the see_image tool to view it.
-```
-
 Then **restart opencode**.
+
+That's it — the plugin self-contains both the tool and the triggering instructions (injected into the system prompt). No separate skill file needed.
 
 ## Prerequisites
 
-You need a connected vision-capable provider. The defaults assume **opencode-go** with **MiniMax M3**:
+You need a connected vision-capable provider. The plugin auto-detects whichever you have connected — **either of these works**:
 
+### Option A — Free (OpenCode Zen)
+1. Run `/connect` in opencode
+2. Select **opencode** (OpenCode Zen)
+3. Paste your API key from [opencode.ai/auth](https://opencode.ai/auth)
+
+The plugin falls back to **big-pickle** (free, vision-capable, ~20s). No subscription needed.
+
+### Option B — Paid, fast (OpenCode Go)
 1. Run `/connect` in opencode
 2. Select **opencode-go**
 3. Paste your API key from [opencode.ai/auth](https://opencode.ai/auth)
 
-If you already have opencode-go connected, you're done.
+The plugin prefers **minimax-m3** via opencode-go (~3s) when available.
+
+**Resolution order:** explicit `SEE_IMAGE_API_KEY` env → configured `SEE_IMAGE_PROVIDER` → `opencode-go` (MiniMax M3) → `opencode` (big-pickle, free).
 
 ## How it works
 
@@ -93,7 +91,15 @@ To use a different opencode-go model (e.g. Kimi K2.7):
 export SEE_IMAGE_MODEL="kimi-k2.7-code"
 ```
 
-### Verified vision-capable models on opencode-go
+### Verified vision-capable models
+
+**Free (OpenCode Zen):**
+
+| Model | Speed | Notes |
+|---|---|---|
+| `big-pickle` | ~20s | Free. Accurate. Default fallback when only Zen is connected. |
+
+**Paid (OpenCode Go):**
 
 | Model | Speed | Notes |
 |---|---|---|
@@ -113,6 +119,20 @@ When opencode rejects an image attachment, the model only receives a bare filena
 5. Current working directory
 
 Pass an absolute `filePath` to skip the search.
+
+## Install via your agent (copy-paste this)
+
+Paste this prompt to your opencode agent — it'll install the plugin for you:
+
+```
+Install the opencode-see-image plugin so I can send you screenshots. Do this:
+
+1. Edit ~/.config/opencode/opencode.jsonc (create it if missing). Preserve any existing fields and the $schema. Add "opencode-see-image" to the "plugin" array. If "plugin" doesn't exist, add it as ["opencode-see-image"].
+2. Check that a vision-capable provider is connected by looking for ~/.local/share/opencode/auth.json with either an "opencode-go" entry (paid, fast) OR an "opencode" entry (free). If neither is present, tell me to run /connect and select either opencode-go or opencode (key from opencode.ai/auth).
+3. Tell me to quit and restart opencode for the plugin to load.
+
+After I restart and attach a screenshot, you should call the see_image tool to view it.
+```
 
 ## License
 
