@@ -29,7 +29,7 @@ Then restart opencode.
 
 Ask your agent:
 ```
-install opencode-see-image
+install the opencode-see-image plugin
 ```
 It'll run `opencode plugin opencode-see-image --global` and tell you to restart.
 
