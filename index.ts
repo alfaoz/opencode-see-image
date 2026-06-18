@@ -252,8 +252,119 @@ Do NOT use \`see_image\` for reading text files — use the \`read\` tool for th
 - If the tool cannot find the file, tell the user the filename and ask for a full path or to drag the file into the project directory.
 - To inspect a specific detail, pass a targeted \`question\` (e.g. "What error is shown in the terminal?").`
 
+// ─── Auto-update ────────────────────────────────────────────────────────────
+// Runs once at plugin init (async, non-blocking). Checks npm for a newer
+// version, runs `bun update` in the opencode plugin cache if available, and
+// toasts the user to restart opencode to apply. Never throws — failures are
+// logged and swallowed so the plugin always loads.
+
+const PKG_NAME = "opencode-see-image"
+const REGISTRY_LATEST = `https://registry.npmjs.org/${PKG_NAME}/latest`
+
+function currentVersion(): string | null {
+  try {
+    // import.meta.url points at this module inside the bun cache.
+    const here = new URL(".", import.meta.url)
+    const pkgPath = new URL("package.json", here)
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"))
+    return pkg.version ?? null
+  } catch {
+    return null
+  }
+}
+
+function semverGt(a: string, b: string): boolean {
+  const pa = a.split(".").map((n) => parseInt(n, 10) || 0)
+  const pb = b.split(".").map((n) => parseInt(n, 10) || 0)
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x > y) return true
+    if (x < y) return false
+  }
+  return false
+}
+
+async function maybeAutoUpdate(
+  client: any,
+  $: any,
+  log: (msg: string, level?: string) => void,
+) {
+  const current = currentVersion()
+  if (!current) {
+    log("could not determine current version; skipping update check", "debug")
+    return
+  }
+
+  let latest: string
+  try {
+    const res = await fetch(REGISTRY_LATEST, {
+      headers: { accept: "application/json" },
+    })
+    if (!res.ok) {
+      log(`registry fetch returned HTTP ${res.status}`, "debug")
+      return
+    }
+    const data: any = await res.json()
+    latest = data?.version
+    if (!latest) {
+      log("registry response had no version field", "debug")
+      return
+    }
+  } catch (e: any) {
+    log(`registry fetch failed: ${e?.message ?? e}`, "debug")
+    return
+  }
+
+  if (!semverGt(latest, current)) {
+    log(`up to date (${current})`, "debug")
+    return
+  }
+
+  log(`update available: ${current} → ${latest}; running bun update`, "info")
+
+  // Update the plugin in opencode's cache. --no-save keeps the lockfile
+  // resolution intact while still pulling the new tarball. We cd into the
+  // cache dir because bun operates on the nearest package.json/lockfile.
+  const cacheDir = path.join(os.homedir(), ".cache/opencode")
+  try {
+    await $`cd ${cacheDir} && bun update ${PKG_NAME} --no-save`.quiet()
+  } catch (e: any) {
+    log(`bun update failed: ${e?.message ?? e}`, "warn")
+    return
+  }
+
+  // Tell the user to restart. Toast is non-blocking; if it fails, we log.
+  try {
+    await client?.tui?.showToast?.({
+      body: {
+        message: `${PKG_NAME} updated to ${latest} — restart opencode to apply`,
+        variant: "success",
+      },
+    })
+  } catch {
+    log(`update applied: ${current} → ${latest}; restart opencode to load`, "info")
+  }
+}
+
 // ─── Plugin export ──────────────────────────────────────────────────────────
 const SeeImagePlugin: Plugin = async (ctx) => {
+  const { client, $ } = ctx
+
+  const log = (message: string, level: string = "info") => {
+    try {
+      client?.app?.log?.({
+        body: { service: PKG_NAME, level, message },
+      })
+    } catch {
+      // logging is best-effort
+    }
+  }
+
+  // Fire-and-forget the update check. Never awaited so plugin init is not
+  // delayed by network. Errors are swallowed inside.
+  maybeAutoUpdate(client, $, log).catch(() => {})
+
   return {
     tool: {
       see_image: seeImageTool,
