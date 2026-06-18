@@ -102,6 +102,20 @@ When opencode rejects an image attachment, the model only receives a bare filena
 
 Pass an absolute `filePath` to skip the search.
 
+## Install via your agent (copy-paste this)
+
+Paste this prompt to your opencode agent — it'll install the plugin for you:
+
+```
+Install the opencode-see-image plugin so I can send you screenshots. Do this:
+
+1. Edit ~/.config/opencode/opencode.jsonc (create it if missing). Preserve any existing fields and the $schema. Add "opencode-see-image" to the "plugin" array. If "plugin" doesn't exist, add it as ["opencode-see-image"].
+2. Check that opencode-go is connected by looking for ~/.local/share/opencode/auth.json with an "opencode-go" entry. If it's missing, tell me to run /connect and select opencode-go (key from opencode.ai/auth).
+3. Tell me to quit and restart opencode for the plugin to load.
+
+After I restart and attach a screenshot, you should call the see_image tool to view it.
+```
+
 ## License
 
 MIT
