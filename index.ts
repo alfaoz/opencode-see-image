@@ -475,7 +475,8 @@ const SeeImagePlugin: Plugin = async (ctx) => {
     }
   }
 
-  log(`plugin initialized`, "info")
+  const version = currentVersion() || "unknown"
+  log(`plugin initialized v${version}`, "info")
   maybeAutoUpdate(client, $, log).catch((e) => {
     log(`auto-update error: ${e?.message ?? e}`, "warn")
   })
