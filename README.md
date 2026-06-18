@@ -76,6 +76,17 @@ see_image tool:
 primary model answers using the description
 ```
 
+## The `see_image` tool
+
+The plugin registers a `see_image` tool with two arguments:
+
+| Arg | Type | Required | Description |
+|---|---|---|---|
+| `filePath` | string | yes | Path to the image. Absolute path, or a bare filename like `"Screenshot 2026-06-18 at 17.32.24.png"` to auto-locate. |
+| `question` | string | no | A specific question about the image. Defaults to a general detailed description. Use this to focus on a particular detail (e.g. `"What error is shown in the terminal?"`). |
+
+Your model calls this tool automatically when you attach a screenshot — you don't need to do anything special. The `question` arg is optional; the model uses it when you ask something specific about the image.
+
 ## Configuration
 
 All settings are env-var overrides. Defaults work out-of-the-box for opencode-go + MiniMax M3.
@@ -121,6 +132,28 @@ export SEE_IMAGE_MODEL="kimi-k2.7-code"
 | `kimi-k2.7-code` | ~7s | Clean output, accurate. |
 | `kimi-k2.6` | ~20s | Accurate but slow. |
 | `qwen3.7-plus` | ~20s | Emits thinking blocks (handled). |
+
+## Updating
+
+opencode caches plugins in `~/.cache/opencode/` using a bun lockfile, so restarting opencode alone won't pull a new version once cached. To update:
+
+**Option 1 — Re-resolve latest (recommended):**
+```bash
+cd ~/.cache/opencode && bun update opencode-see-image
+```
+Then restart opencode.
+
+**Option 2 — Pin a version in your config:**
+```jsonc
+"plugin": ["opencode-see-image@0.2.1"]
+```
+Bump the pinned version to upgrade. Restart opencode.
+
+**Option 3 — Clear cache entirely:**
+```bash
+rm -rf ~/.cache/opencode/node_modules ~/.cache/opencode/bun.lock
+```
+Restart opencode — it re-resolves everything from npm.
 
 ## File search locations
 
