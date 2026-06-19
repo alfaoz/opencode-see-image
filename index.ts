@@ -12,6 +12,12 @@ const ENDPOINT =
 const MODEL = process.env.SEE_IMAGE_MODEL || "minimax-m3"
 const PROVIDER_ID = process.env.SEE_IMAGE_PROVIDER || "opencode-go"
 const TIMEOUT = parseInt(process.env.SEE_IMAGE_TIMEOUT || "30000", 10)
+// Stall timeout: while streaming, only abort if the model produces no new
+// tokens for this long. Lets long transcriptions run as long as they keep
+// progressing. Used for the SDK streaming path.
+const STALL_TIMEOUT = parseInt(process.env.SEE_IMAGE_STALL_TIMEOUT || "60000", 10)
+// Optional absolute cap on a single streaming call (0 = no cap).
+const MAX_TIMEOUT = parseInt(process.env.SEE_IMAGE_MAX_TIMEOUT || "0", 10)
 const API_VERSION = process.env.SEE_IMAGE_API_VERSION || "2023-06-01"
 const USER_AGENT =
   process.env.SEE_IMAGE_USER_AGENT ||
@@ -216,12 +222,15 @@ function readProviderKey(providerID: string): string | null {
   }
 }
 
+type ProgressFn = (info: { chars: number; preview: string; provider: string; model: string }) => void
+
 async function seeImageViaSDK(
   client: any,
   dataUrl: string,
   mediaType: string,
   prompt: string,
   abort?: AbortSignal,
+  onProgress?: ProgressFn,
 ): Promise<{ text: string; model: string; provider: string }> {
   const errors: string[] = []
 
@@ -288,6 +297,115 @@ async function seeImageViaSDK(
     return null
   }
 
+  // Stream a vision response from a paid/SDK provider. Subscribes to opencode's
+  // event stream so we can (a) surface live progress and (b) use a *stall*
+  // timeout — we only give up if the model goes quiet for STALL_TIMEOUT, so a
+  // long transcription keeps running as long as it's producing tokens. Returns
+  // whatever text was produced, even if a stall/abort cut it short (partial).
+  const streamCandidate = async (
+    providerID: string,
+    modelID: string,
+  ): Promise<string | null> => {
+    const sessionRes = await Promise.race([
+      client.session.create({ body: {} }),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`session.create timed out after ${TIMEOUT}ms`)),
+          TIMEOUT,
+        ),
+      ),
+    ])
+    const sessionID: string | undefined = sessionRes.data?.id
+    if (!sessionID) throw new Error("no session ID")
+
+    const controller = new AbortController()
+    const onAbort = () => controller.abort()
+    abort?.addEventListener("abort", onAbort)
+
+    // Subscribe to events before prompting so we don't miss early tokens.
+    let stream: AsyncGenerator<any> | undefined
+    try {
+      const sub = await client.event.subscribe()
+      stream = sub?.stream
+    } catch {}
+
+    const partsByID = new Map<string, string>()
+    let streamedText = ""
+    let lastActivity = Date.now()
+    let finished = false
+
+    const consume = (async () => {
+      if (!stream) return
+      try {
+        for await (const ev of stream) {
+          if (finished) break
+          if (
+            ev?.type === "message.part.updated" &&
+            ev.properties?.part?.type === "text" &&
+            ev.properties.part.sessionID === sessionID
+          ) {
+            const p = ev.properties.part
+            partsByID.set(p.id, typeof p.text === "string" ? p.text : "")
+            streamedText = [...partsByID.values()].join("\n").trim()
+            lastActivity = Date.now()
+            onProgress?.({
+              chars: streamedText.length,
+              preview: streamedText.slice(-160),
+              provider: providerID,
+              model: modelID,
+            })
+          }
+        }
+      } catch {}
+    })()
+
+    // Stall watchdog (only when we actually have a stream to measure activity).
+    const stallTimer = stream
+      ? setInterval(() => {
+          if (Date.now() - lastActivity > STALL_TIMEOUT) controller.abort()
+        }, 1000)
+      : undefined
+    const maxTimer =
+      MAX_TIMEOUT > 0 ? setTimeout(() => controller.abort(), MAX_TIMEOUT) : undefined
+
+    let res: any
+    try {
+      res = await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          model: { providerID, modelID },
+          parts: [
+            { type: "file", mime: mediaType, url: dataUrl },
+            { type: "text", text: prompt },
+          ],
+          tools: {},
+          system:
+            "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
+        },
+        signal: controller.signal,
+      })
+    } catch (e: any) {
+      // Aborted by stall/max/external — fall through to whatever we streamed.
+      if (!streamedText) throw e
+    } finally {
+      finished = true
+      if (stallTimer) clearInterval(stallTimer)
+      if (maxTimer) clearTimeout(maxTimer)
+      try { await stream?.return?.(undefined) } catch {}
+      abort?.removeEventListener("abort", onAbort)
+      client.session.delete({ path: { id: sessionID } }).catch(() => {})
+    }
+
+    const finalText = (res?.data?.parts ?? [])
+      .filter((p: any) => p.type === "text")
+      .map((p: any) => p.text)
+      .filter((t: any) => typeof t === "string" && t.length > 0)
+      .join("\n")
+      .trim()
+
+    return finalText || streamedText || null
+  }
+
   let result: { text: string; model: string; provider: string } | undefined
 
   try {
@@ -312,56 +430,8 @@ async function seeImageViaSDK(
         continue
       }
 
-      let sessionID: string | undefined
       try {
-        const sessionRes = await Promise.race([
-          client.session.create({ body: {} }),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`session.create timed out after ${TIMEOUT}ms`)),
-              TIMEOUT,
-            ),
-          ),
-        ])
-        sessionID = sessionRes.data?.id
-        if (!sessionID) {
-          errors.push(`${providerID}/${modelID}: no session ID`)
-          continue
-        }
-
-        const controller = new AbortController()
-        const onAbort = () => controller.abort()
-        abort?.addEventListener("abort", onAbort)
-        const timer = setTimeout(() => controller.abort(), TIMEOUT)
-        let res
-        try {
-          res = await client.session.prompt({
-            path: { id: sessionID },
-            body: {
-              model: { providerID, modelID },
-              parts: [
-                { type: "file", mime: mediaType, url: dataUrl },
-                { type: "text", text: prompt },
-              ],
-              tools: {},
-              system:
-                "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
-            },
-            signal: controller.signal,
-          })
-        } finally {
-          clearTimeout(timer)
-          abort?.removeEventListener("abort", onAbort)
-        }
-
-        const parts = res.data?.parts ?? []
-        const text = (parts as any[])
-          .filter((p: any) => p.type === "text")
-          .map((p: any) => p.text)
-          .filter((t: any) => typeof t === "string" && t.length > 0)
-          .join("\n")
-          .trim()
-
+        const text = await streamCandidate(providerID, modelID)
         if (text) {
           result = { text, model: modelID, provider: providerID }
           break
@@ -369,12 +439,6 @@ async function seeImageViaSDK(
         errors.push(`${providerID}/${modelID}: no text in response`)
       } catch (e: any) {
         errors.push(`${providerID}/${modelID}: ${e?.message ?? e}`)
-      } finally {
-        if (sessionID) {
-          await client.session
-            .delete({ path: { id: sessionID } })
-            .catch(() => {})
-        }
       }
     }
 
@@ -549,12 +613,25 @@ const SeeImagePlugin: Plugin = async (ctx) => {
         const b64 = resolved.dataUrl.split(",")[1] || ""
         result = await seeImageViaHTTP(b64, resolved.mediaType, prompt, context.abort)
       } else {
+        // Throttle live progress updates so we don't spam the UI while the
+        // vision model streams a long response.
+        let lastUpdate = 0
+        const onProgress: ProgressFn = (info) => {
+          const now = Date.now()
+          if (now - lastUpdate < 400) return
+          lastUpdate = now
+          context.metadata({
+            title: `see_image: reading… ${info.chars} chars (${info.model})`,
+            metadata: { streaming: true, chars: info.chars, preview: info.preview },
+          })
+        }
         result = await seeImageViaSDK(
           client,
           resolved.dataUrl,
           resolved.mediaType,
           prompt,
           context.abort,
+          onProgress,
         )
       }
 

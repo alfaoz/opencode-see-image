@@ -102,7 +102,13 @@ all settings are env-var overrides. The plugin uses opencode's SDK client by def
 | `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used if `SEE_IMAGE_API_KEY` is set) |
 | `SEE_IMAGE_API_VERSION` | `2023-06-01` | `anthropic-version` header (HTTP mode only) |
 | `SEE_IMAGE_USER_AGENT` | _(Chrome UA)_ | User-Agent header (HTTP mode only) |
-| `SEE_IMAGE_TIMEOUT` | `30000` | Per-candidate timeout in ms. Prevents hanging on slow models. |
+| `SEE_IMAGE_TIMEOUT` | `30000` | Timeout in ms for session setup and HTTP-mode calls. |
+| `SEE_IMAGE_STALL_TIMEOUT` | `60000` | Stall timeout in ms (SDK streaming). The call is only aborted if the vision model produces no new tokens for this long — so long transcriptions keep running as long as they're progressing. |
+| `SEE_IMAGE_MAX_TIMEOUT` | `0` | Absolute cap in ms on a single streaming call. `0` = no cap. |
+
+### streaming
+
+On the SDK path the plugin streams the vision model's output and shows live progress in the tool call (`see_image: reading… N chars`). Instead of a hard timeout, it uses a **stall timeout** (`SEE_IMAGE_STALL_TIMEOUT`): a slow-but-progressing model (e.g. transcribing a huge table) runs to completion, while a genuinely hung call is still reaped. If a call is cut short, whatever was streamed so far is returned rather than nothing.
 
 ### using a different vision model
 
