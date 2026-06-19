@@ -12,22 +12,6 @@ const ENDPOINT =
 const MODEL = process.env.SEE_IMAGE_MODEL || "minimax-m3"
 const PROVIDER_ID = process.env.SEE_IMAGE_PROVIDER || "opencode-go"
 const TIMEOUT = parseInt(process.env.SEE_IMAGE_TIMEOUT || "30000", 10)
-// Stall timeout (SDK streaming path): abort only if the model produces no new
-// tokens for this long. A slow-but-progressing call keeps running.
-const STALL_TIMEOUT = parseInt(process.env.SEE_IMAGE_STALL_TIMEOUT || "60000", 10)
-// Optional absolute cap on a single vision call, in ms (0 = no cap).
-const MAX_TIMEOUT = parseInt(process.env.SEE_IMAGE_MAX_TIMEOUT || "0", 10)
-
-// Animated heartbeat: a flowing gradient wave shown in the tool title while we
-// wait, so the user can see the call is alive and not frozen.
-const HEARTBEAT_FRAMES = ["░", "▒", "▓", "█", "▓", "▒", "░"]
-function heartbeatBar(tick: number, width = 14): string {
-  let s = ""
-  for (let i = 0; i < width; i++) {
-    s += HEARTBEAT_FRAMES[(i + tick) % HEARTBEAT_FRAMES.length]
-  }
-  return s
-}
 const API_VERSION = process.env.SEE_IMAGE_API_VERSION || "2023-06-01"
 const USER_AGENT =
   process.env.SEE_IMAGE_USER_AGENT ||
@@ -232,15 +216,12 @@ function readProviderKey(providerID: string): string | null {
   }
 }
 
-type ProgressFn = (info: { chars: number; preview: string; model: string }) => void
-
 async function seeImageViaSDK(
   client: any,
   dataUrl: string,
   mediaType: string,
   prompt: string,
   abort?: AbortSignal,
-  onProgress?: ProgressFn,
 ): Promise<{ text: string; model: string; provider: string }> {
   const errors: string[] = []
 
@@ -264,147 +245,13 @@ async function seeImageViaSDK(
     return tmpPath
   }
 
-  // Two runners back the candidate list:
-  //
-  // streamViaSDK — subscribes to opencode's event stream so we get text
-  //   token-by-token. This drives the live content preview AND token-based
-  //   stall detection (abort only after STALL_TIMEOUT of silence). It also
-  //   races the prompt against a stall/max rejection, so a hung call can't
-  //   block past the stall window even if the abort signal is ignored. Only
-  //   used when an event stream is actually available (its whole point).
-  //
-  // runViaCLI — `opencode run -m <provider>/<model>` via Bun.spawn (killable).
-  //   The proven, reliable fallback. It buffers --format json output until
-  //   exit, so it gives no live preview, but it returns the full answer.
-  const streamViaSDK = async (
-    providerID: string,
-    modelID: string,
-  ): Promise<string | null> => {
-    const sessionRes = await Promise.race([
-      client.session.create({ body: {} }),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`session.create timed out after ${TIMEOUT}ms`)),
-          TIMEOUT,
-        ),
-      ),
-    ])
-    const sessionID: string | undefined = sessionRes.data?.id
-    if (!sessionID) throw new Error("no session ID")
-
-    const cleanupSession = () =>
-      client.session.delete({ path: { id: sessionID } }).catch(() => {})
-
-    // The SDK path exists for the live preview; if we can't get an event
-    // stream there's nothing to preview or to measure stalls against, so bail
-    // and let the loop fall through to the reliable CLI runner.
-    let stream: AsyncGenerator<any> | undefined
-    try {
-      stream = (await client.event.subscribe())?.stream
-    } catch {}
-    if (!stream) {
-      cleanupSession()
-      return null
-    }
-
-    const controller = new AbortController()
-    const onAbort = () => controller.abort()
-    abort?.addEventListener("abort", onAbort)
-
-    const partsByID = new Map<string, string>()
-    let streamedText = ""
-    let lastActivity = Date.now()
-    let finished = false
-
-    const consume = (async () => {
-      try {
-        for await (const ev of stream!) {
-          if (finished) break
-          const p = ev?.properties?.part
-          if (
-            ev?.type === "message.part.updated" &&
-            p?.type === "text" &&
-            p.sessionID === sessionID
-          ) {
-            partsByID.set(p.id, typeof p.text === "string" ? p.text : "")
-            streamedText = [...partsByID.values()].join("\n").trim()
-            lastActivity = Date.now()
-            onProgress?.({
-              chars: streamedText.length,
-              preview: streamedText.slice(-200),
-              model: modelID,
-            })
-          }
-        }
-      } catch {}
-    })()
-
-    let stallTimer: ReturnType<typeof setInterval> | undefined
-    let maxTimer: ReturnType<typeof setTimeout> | undefined
-    const guard = new Promise<never>((_, reject) => {
-      stallTimer = setInterval(() => {
-        if (Date.now() - lastActivity > STALL_TIMEOUT) {
-          controller.abort()
-          reject(new Error(`stalled: no tokens for ${STALL_TIMEOUT}ms`))
-        }
-      }, 1000)
-      if (MAX_TIMEOUT > 0) {
-        maxTimer = setTimeout(() => {
-          controller.abort()
-          reject(new Error(`exceeded MAX_TIMEOUT ${MAX_TIMEOUT}ms`))
-        }, MAX_TIMEOUT)
-      }
-    })
-
-    let res: any
-    try {
-      res = await Promise.race([
-        client.session.prompt({
-          path: { id: sessionID },
-          body: {
-            model: { providerID, modelID },
-            parts: [
-              { type: "file", mime: mediaType, url: dataUrl },
-              { type: "text", text: prompt },
-            ],
-            tools: {},
-            system:
-              "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
-          },
-          signal: controller.signal,
-        }),
-        guard,
-      ])
-    } catch (e: any) {
-      // Stalled / aborted / errored — keep whatever streamed in so far.
-      if (!streamedText) throw e
-    } finally {
-      finished = true
-      if (stallTimer) clearInterval(stallTimer)
-      if (maxTimer) clearTimeout(maxTimer)
-      try { await stream.return?.(undefined) } catch {}
-      abort?.removeEventListener("abort", onAbort)
-      cleanupSession()
-    }
-
-    const finalText = (res?.data?.parts ?? [])
-      .filter((p: any) => p.type === "text")
-      .map((p: any) => p.text)
-      .filter((t: any) => typeof t === "string" && t.length > 0)
-      .join("\n")
-      .trim()
-
-    return finalText || streamedText || null
-  }
-
-  const runViaCLI = async (
-    providerID: string,
-    modelID: string,
-  ): Promise<string | null> => {
+  // For free opencode models, use CLI instead of SDK (SDK returns empty).
+  // Use Bun.spawn (not $) so we get a killable handle: Bun's $ ShellPromise
+  // has no .kill(), so racing it against a timeout would leak the process.
+  // We kill the child on both timeout and external abort.
+  const freeFallback = async (modelID: string, userPrompt: string): Promise<string | null> => {
     const filePath = ensureTmpFile()
     if (!filePath) return null
-    onProgress?.({ chars: 0, preview: "", model: modelID })
-
     const proc = Bun.spawn(
       [
         "opencode",
@@ -412,72 +259,122 @@ async function seeImageViaSDK(
         "-f",
         filePath,
         "-m",
-        `${providerID}/${modelID}`,
-        prompt,
+        `opencode/${modelID}`,
+        userPrompt,
         "--format",
         "json",
         "--dangerously-skip-permissions",
       ],
       { stdout: "pipe", stderr: "ignore" },
     )
+    const timer = setTimeout(() => proc.kill(), TIMEOUT)
     const onAbort = () => proc.kill()
     abort?.addEventListener("abort", onAbort)
-    const maxTimer =
-      MAX_TIMEOUT > 0 ? setTimeout(() => proc.kill(), MAX_TIMEOUT) : undefined
-
     try {
       const out = await new Response(proc.stdout).text()
       await proc.exited
-      const parts = new Map<string, string>()
       for (const line of out.split("\n").filter(Boolean)) {
         try {
-          const p = JSON.parse(line)?.part
-          if (p?.type === "text" && typeof p.text === "string") {
-            parts.set(p.id ?? String(parts.size), p.text)
+          const parsed = JSON.parse(line)
+          if (parsed?.part?.type === "text" && parsed?.part?.text) {
+            return parsed.part.text
           }
         } catch {}
       }
-      return [...parts.values()].join("\n").trim() || null
-    } catch {
-      return null
-    } finally {
-      if (maxTimer) clearTimeout(maxTimer)
+    } catch {} finally {
+      clearTimeout(timer)
       abort?.removeEventListener("abort", onAbort)
     }
+    return null
   }
 
   let result: { text: string; model: string; provider: string } | undefined
 
   try {
-    const candidates: Array<{
-      providerID: string
-      modelID: string
-      mode: "sdk" | "cli"
-    }> = []
+    const candidates: Array<{ providerID: string; modelID: string }> = []
     const envProvider = process.env.SEE_IMAGE_PROVIDER
     const envModel = process.env.SEE_IMAGE_MODEL
     if (envProvider && envModel) {
-      candidates.push({ providerID: envProvider, modelID: envModel, mode: "sdk" })
+      candidates.push({ providerID: envProvider, modelID: envModel })
     }
-    // Prefer streaming minimax (live preview); fall back to the same model via
-    // the proven CLI runner; then the free model via CLI.
-    candidates.push({ providerID: "opencode-go", modelID: "minimax-m3", mode: "sdk" })
-    candidates.push({ providerID: "opencode-go", modelID: "minimax-m3", mode: "cli" })
-    candidates.push({ providerID: "opencode", modelID: "mimo-v2.5-free", mode: "cli" })
+    candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
+    candidates.push({ providerID: "opencode", modelID: "mimo-v2.5-free" })
 
-    for (const { providerID, modelID, mode } of candidates) {
-      try {
-        const text =
-          mode === "sdk"
-            ? await streamViaSDK(providerID, modelID)
-            : await runViaCLI(providerID, modelID)
+    for (const { providerID, modelID } of candidates) {
+      if (providerID === "opencode") {
+        // SDK session.prompt returns empty for free models; use CLI instead
+        const text = await freeFallback(modelID, prompt)
         if (text) {
           result = { text, model: modelID, provider: providerID }
           break
         }
-        errors.push(`${providerID}/${modelID} (${mode}): no text`)
+        errors.push(`${providerID}/${modelID}: no text from CLI fallback`)
+        continue
+      }
+
+      let sessionID: string | undefined
+      try {
+        const sessionRes = await Promise.race([
+          client.session.create({ body: {} }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`session.create timed out after ${TIMEOUT}ms`)),
+              TIMEOUT,
+            ),
+          ),
+        ])
+        sessionID = sessionRes.data?.id
+        if (!sessionID) {
+          errors.push(`${providerID}/${modelID}: no session ID`)
+          continue
+        }
+
+        const controller = new AbortController()
+        const onAbort = () => controller.abort()
+        abort?.addEventListener("abort", onAbort)
+        const timer = setTimeout(() => controller.abort(), TIMEOUT)
+        let res
+        try {
+          res = await client.session.prompt({
+            path: { id: sessionID },
+            body: {
+              model: { providerID, modelID },
+              parts: [
+                { type: "file", mime: mediaType, url: dataUrl },
+                { type: "text", text: prompt },
+              ],
+              tools: {},
+              system:
+                "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
+            },
+            signal: controller.signal,
+          })
+        } finally {
+          clearTimeout(timer)
+          abort?.removeEventListener("abort", onAbort)
+        }
+
+        const parts = res.data?.parts ?? []
+        const text = (parts as any[])
+          .filter((p: any) => p.type === "text")
+          .map((p: any) => p.text)
+          .filter((t: any) => typeof t === "string" && t.length > 0)
+          .join("\n")
+          .trim()
+
+        if (text) {
+          result = { text, model: modelID, provider: providerID }
+          break
+        }
+        errors.push(`${providerID}/${modelID}: no text in response`)
       } catch (e: any) {
-        errors.push(`${providerID}/${modelID} (${mode}): ${e?.message ?? e}`)
+        errors.push(`${providerID}/${modelID}: ${e?.message ?? e}`)
+      } finally {
+        if (sessionID) {
+          await client.session
+            .delete({ path: { id: sessionID } })
+            .catch(() => {})
+        }
       }
     }
 
@@ -648,57 +545,17 @@ const SeeImagePlugin: Plugin = async (ctx) => {
 
       let result: { text: string; model: string; provider: string }
 
-      // Live feedback while we wait: an animated heartbeat bar plus, once the
-      // vision model starts streaming, a growing char count and a preview of
-      // the latest text. The timer ticks independently so the bar animates
-      // even before any tokens arrive; onProgress feeds it streamed content.
-      const started = Date.now()
-      let tick = 0
-      const live = { chars: 0, preview: "", model: "" }
-      const onProgress: ProgressFn = (info) => {
-        live.chars = info.chars
-        live.preview = info.preview
-        if (info.model) live.model = info.model
-      }
-      const render = () => {
-        const secs = Math.round((Date.now() - started) / 1000)
-        const bar = heartbeatBar(++tick)
-        const label = live.chars > 0 ? `reading… ${live.chars} chars` : "looking…"
-        const model = live.model ? ` · ${live.model}` : ""
-        context.metadata({
-          title: `see_image ${bar} ${label} · ${secs}s${model}`,
-          metadata: {
-            elapsedSeconds: secs,
-            chars: live.chars,
-            preview: live.preview,
-            model: live.model,
-          },
-        })
-      }
-      render()
-      const heartbeat = setInterval(render, 500)
-
-      try {
-        if (process.env.SEE_IMAGE_API_KEY) {
-          const b64 = resolved.dataUrl.split(",")[1] || ""
-          result = await seeImageViaHTTP(
-            b64,
-            resolved.mediaType,
-            prompt,
-            context.abort,
-          )
-        } else {
-          result = await seeImageViaSDK(
-            client,
-            resolved.dataUrl,
-            resolved.mediaType,
-            prompt,
-            context.abort,
-            onProgress,
-          )
-        }
-      } finally {
-        clearInterval(heartbeat)
+      if (process.env.SEE_IMAGE_API_KEY) {
+        const b64 = resolved.dataUrl.split(",")[1] || ""
+        result = await seeImageViaHTTP(b64, resolved.mediaType, prompt, context.abort)
+      } else {
+        result = await seeImageViaSDK(
+          client,
+          resolved.dataUrl,
+          resolved.mediaType,
+          prompt,
+          context.abort,
+        )
       }
 
       context.metadata({
