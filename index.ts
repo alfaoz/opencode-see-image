@@ -17,6 +17,17 @@ const USER_AGENT =
   process.env.SEE_IMAGE_USER_AGENT ||
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 
+// Animated heartbeat shown in the tool title while we wait, so the user can
+// see the call is alive. Purely cosmetic — never touches the vision call.
+const HEARTBEAT_FRAMES = ["░", "▒", "▓", "█", "▓", "▒", "░"]
+function heartbeatBar(tick: number, width = 12): string {
+  let s = ""
+  for (let i = 0; i < width; i++) {
+    s += HEARTBEAT_FRAMES[(i + tick) % HEARTBEAT_FRAMES.length]
+  }
+  return s
+}
+
 const EXT_MEDIA: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -545,17 +556,47 @@ const SeeImagePlugin: Plugin = async (ctx) => {
 
       let result: { text: string; model: string; provider: string }
 
-      if (process.env.SEE_IMAGE_API_KEY) {
-        const b64 = resolved.dataUrl.split(",")[1] || ""
-        result = await seeImageViaHTTP(b64, resolved.mediaType, prompt, context.abort)
-      } else {
-        result = await seeImageViaSDK(
-          client,
-          resolved.dataUrl,
-          resolved.mediaType,
-          prompt,
-          context.abort,
-        )
+      // Animated heartbeat while we wait. Runs on a timer independent of the
+      // vision call — it only updates the tool title/metadata and a startup
+      // toast, so it can never affect whether the image is seen. The vision
+      // call below is identical to 0.9.3.
+      const started = Date.now()
+      let tick = 0
+      const render = () => {
+        const secs = Math.round((Date.now() - started) / 1000)
+        context.metadata({
+          title: `see_image ${heartbeatBar(++tick)} looking… ${secs}s`,
+          metadata: { working: true, elapsedSeconds: secs },
+        })
+      }
+      render()
+      const heartbeat = setInterval(render, 500)
+      // One-shot toast so there's immediate visible feedback that it started,
+      // since not every TUI repaints a running tool's title. Best-effort.
+      try {
+        client?.tui?.showToast?.({
+          body: {
+            message: `👁 see_image: looking at ${args.filePath}…`,
+            variant: "info",
+          },
+        })
+      } catch {}
+
+      try {
+        if (process.env.SEE_IMAGE_API_KEY) {
+          const b64 = resolved.dataUrl.split(",")[1] || ""
+          result = await seeImageViaHTTP(b64, resolved.mediaType, prompt, context.abort)
+        } else {
+          result = await seeImageViaSDK(
+            client,
+            resolved.dataUrl,
+            resolved.mediaType,
+            prompt,
+            context.abort,
+          )
+        }
+      } finally {
+        clearInterval(heartbeat)
       }
 
       context.metadata({
