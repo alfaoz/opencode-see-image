@@ -42,7 +42,7 @@ You need a connected vision-capable provider. The plugin auto-detects whichever 
 2. Select **opencode** (OpenCode Zen)
 3. Paste your API key from [opencode.ai/auth](https://opencode.ai/auth)
 
-The plugin falls back to **big-pickle** (~12000ms). No subscription needed.
+The plugin falls back to **mimo-v2.5-free**. No subscription needed.
 
 ### Paid, w/ OpenCode Go
 1. Run `/connect` in opencode
@@ -55,7 +55,7 @@ The plugin prefers **minimax-m3** via opencode-go (~3000ms) when available.
 
 Set the `SEE_IMAGE_*` env vars to point at any Anthropic-Messages-compatible endpoint. See [Configuration](#configuration) below.
 
-**Resolution order:** explicit `SEE_IMAGE_API_KEY` env → configured `SEE_IMAGE_PROVIDER` → `opencode-go` (MiniMax M3) → `opencode` (big-pickle, free).
+**Resolution order:** explicit `SEE_IMAGE_API_KEY` env → configured `SEE_IMAGE_PROVIDER` → `opencode-go` (MiniMax M3) → `opencode` (mimo-v2.5-free, free).
 
 ## How it works
 
@@ -126,7 +126,8 @@ export SEE_IMAGE_MODEL="kimi-k2.7-code"
 
 | Model | Speed | Notes |
 |---|---|---|
-| `big-pickle` | ~12000ms | Free. Accurate. Default fallback when only Zen is connected. |
+| `mimo-v2.5-free` | — | Free. Default fallback when only Zen is connected (routed via CLI). |
+| `big-pickle` | ~12000ms | Free. Accurate. Alternative Zen fallback. |
 
 **Paid (OpenCode Go):**
 

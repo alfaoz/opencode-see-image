@@ -47,8 +47,9 @@ function resolveFromDb(
   const dbPath = opencodeDbPath()
   if (!fs.existsSync(dbPath)) return null
 
+  let db: Database | undefined
   try {
-    const db = new Database(dbPath, { readonly: true })
+    db = new Database(dbPath, { readonly: true })
     let rows: Array<{ data: string }>
 
     if (!filename || filename === "clipboard") {
@@ -98,8 +99,6 @@ function resolveFromDb(
       }
     }
 
-    db.close()
-
     if (!rows.length) return null
     const part = JSON.parse(rows[0].data)
     const url: string = part.url || ""
@@ -112,6 +111,8 @@ function resolveFromDb(
     }
   } catch {
     return null
+  } finally {
+    db?.close()
   }
 }
 
@@ -195,80 +196,176 @@ function resolveImage(name: string, cwd: string, sessionID?: string): ResolvedIm
   )
 }
 
+function readProviderKey(providerID: string): string | null {
+  try {
+    const xdgDataHome = process.env.XDG_DATA_HOME
+      ? path.join(process.env.XDG_DATA_HOME, "opencode")
+      : ""
+    const dataDir =
+      process.env.OPENCODE_DATA_DIR ||
+      xdgDataHome ||
+      path.join(os.homedir(), ".local/share/opencode")
+    const authPath = path.join(dataDir, "auth.json")
+    if (!fs.existsSync(authPath)) return null
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf8"))
+    const entry = auth[providerID]
+    if (entry?.type === "api" && entry?.key) return entry.key
+    return null
+  } catch {
+    return null
+  }
+}
+
 async function seeImageViaSDK(
   client: any,
+  $: any,
   dataUrl: string,
   mediaType: string,
   prompt: string,
   abort?: AbortSignal,
 ): Promise<{ text: string; model: string; provider: string }> {
-  const envProvider = process.env.SEE_IMAGE_PROVIDER
-  const envModel = process.env.SEE_IMAGE_MODEL
-  const candidates: Array<{ providerID: string; modelID: string }> = []
-  if (envProvider && envModel) {
-    candidates.push({ providerID: envProvider, modelID: envModel })
-  }
-  candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
-  candidates.push({ providerID: "opencode", modelID: "big-pickle" })
-
   const errors: string[] = []
 
-  for (const { providerID, modelID } of candidates) {
-    let sessionID: string | undefined
+  // Write image to a temp file so the server can read it directly. Use the
+  // real extension so the CLI can sniff the type correctly.
+  const b64 = dataUrl.split(",")[1] || ""
+  const ext =
+    Object.entries(EXT_MEDIA).find(([, m]) => m === mediaType)?.[0] || "png"
+  const tmpPath = path.join(os.tmpdir(), `see-image-${Date.now()}.${ext}`)
+  try {
+    fs.writeFileSync(tmpPath, Buffer.from(b64, "base64"))
+  } catch {}
+
+  // For free opencode models, use CLI instead of SDK (SDK returns empty).
+  // Bun's $ doesn't accept an AbortSignal, so race the output against a
+  // timeout to actually bound how long a slow model can hang us.
+  const freeFallback = async (modelID: string, userPrompt: string): Promise<string | null> => {
     try {
-      const sessionRes = await client.session.create({ body: {} })
-      sessionID = sessionRes.data?.id
-      if (!sessionID) {
-        errors.push(`${providerID}/${modelID}: no session ID`)
+      const proc = $`opencode run -f ${tmpPath} -m opencode/${modelID} ${userPrompt} --format json --dangerously-skip-permissions`.nothrow()
+      const out = await Promise.race([
+        proc.text(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`timed out after ${TIMEOUT}ms`)), TIMEOUT),
+        ),
+      ])
+      for (const line of out.split("\n").filter(Boolean)) {
+        try {
+          const parsed = JSON.parse(line)
+          if (parsed?.part?.type === "text" && parsed?.part?.text) {
+            return parsed.part.text
+          }
+        } catch {}
+      }
+    } catch {}
+    return null
+  }
+
+  let result: { text: string; model: string; provider: string } | undefined
+
+  try {
+    const candidates: Array<{ providerID: string; modelID: string }> = []
+    const envProvider = process.env.SEE_IMAGE_PROVIDER
+    const envModel = process.env.SEE_IMAGE_MODEL
+    if (envProvider && envModel) {
+      candidates.push({ providerID: envProvider, modelID: envModel })
+    }
+    candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
+    candidates.push({ providerID: "opencode", modelID: "mimo-v2.5-free" })
+
+    for (const { providerID, modelID } of candidates) {
+      if (providerID === "opencode") {
+        // SDK session.prompt returns empty for free models; use CLI instead
+        const text = await freeFallback(modelID, prompt)
+        if (text) {
+          result = { text, model: modelID, provider: providerID }
+          break
+        }
+        errors.push(`${providerID}/${modelID}: no text from CLI fallback`)
         continue
       }
 
-      // Per-candidate timeout so a slow model doesn't hang forever
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), TIMEOUT)
+      let sessionID: string | undefined
+      try {
+        const sessionRes = await client.session.create({ body: {} })
+        sessionID = sessionRes.data?.id
+        if (!sessionID) {
+          errors.push(`${providerID}/${modelID}: no session ID`)
+          continue
+        }
 
-      const result = await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          model: { providerID, modelID },
-          parts: [
-            { type: "file", mime: mediaType, url: dataUrl },
-            { type: "text", text: prompt },
-          ],
-          tools: {},
-          system:
-            "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
-        },
-        signal: controller.signal,
-      })
-      clearTimeout(timer)
+        const controller = new AbortController()
+        const onAbort = () => controller.abort()
+        abort?.addEventListener("abort", onAbort)
+        const timer = setTimeout(() => controller.abort(), TIMEOUT)
+        let res
+        try {
+          res = await client.session.prompt({
+            path: { id: sessionID },
+            body: {
+              model: { providerID, modelID },
+              parts: [
+                { type: "file", mime: mediaType, url: dataUrl },
+                { type: "text", text: prompt },
+              ],
+              tools: {},
+              system:
+                "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
+            },
+            signal: controller.signal,
+          })
+        } finally {
+          clearTimeout(timer)
+          abort?.removeEventListener("abort", onAbort)
+        }
 
-      const parts = result.data?.parts ?? []
-      const text = (parts as any[])
-        .filter((p: any) => p.type === "text")
-        .map((p: any) => p.text)
-        .filter((t: any) => typeof t === "string" && t.length > 0)
-        .join("\n")
-        .trim()
+        const parts = res.data?.parts ?? []
+        const text = (parts as any[])
+          .filter((p: any) => p.type === "text")
+          .map((p: any) => p.text)
+          .filter((t: any) => typeof t === "string" && t.length > 0)
+          .join("\n")
+          .trim()
 
-      if (text) {
-        return { text, model: modelID, provider: providerID }
-      }
-      errors.push(`${providerID}/${modelID}: no text in response`)
-    } catch (e: any) {
-      errors.push(`${providerID}/${modelID}: ${e?.message ?? e}`)
-    } finally {
-      if (sessionID) {
-        await client.session
-          .delete({ path: { id: sessionID } })
-          .catch(() => {})
+        if (text) {
+          result = { text, model: modelID, provider: providerID }
+          break
+        }
+        errors.push(`${providerID}/${modelID}: no text in response`)
+      } catch (e: any) {
+        errors.push(`${providerID}/${modelID}: ${e?.message ?? e}`)
+      } finally {
+        if (sessionID) {
+          await client.session
+            .delete({ path: { id: sessionID } })
+            .catch(() => {})
+        }
       }
     }
-  }
 
-  throw new Error(
-    `see_image: SDK vision call failed for all candidates. ${errors.join("; ")}`,
-  )
+    if (!result) {
+      const apiKey =
+        process.env.SEE_IMAGE_API_KEY || readProviderKey("opencode-go")
+      if (apiKey) {
+        try {
+          result = await seeImageViaHTTP(b64, mediaType, prompt, abort, apiKey)
+        } catch (e: any) {
+          errors.push(`http-fallback: ${e?.message ?? e}`)
+        }
+      }
+    }
+
+    if (result) return result
+
+    const errMsg = errors.join("; ")
+    const hint = errMsg.includes("usage limit")
+      ? ` Enable usage from your balance in your opencode workspace at https://opencode.ai/workspace`
+      : ""
+    throw new Error(
+      `see_image: SDK vision call failed for all candidates. ${errMsg}.${hint}`,
+    )
+  } finally {
+    try { fs.unlinkSync(tmpPath) } catch {}
+  }
 }
 
 async function seeImageViaHTTP(
@@ -276,8 +373,9 @@ async function seeImageViaHTTP(
   mediaType: string,
   prompt: string,
   abort?: AbortSignal,
+  keyOverride?: string,
 ): Promise<{ text: string; model: string; provider: string }> {
-  const key = process.env.SEE_IMAGE_API_KEY!
+  const key = keyOverride || process.env.SEE_IMAGE_API_KEY!
   const body = {
     model: MODEL,
     max_tokens: 2048,
@@ -402,6 +500,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       } else {
         result = await seeImageViaSDK(
           client,
+          $,
           resolved.dataUrl,
           resolved.mediaType,
           prompt,
