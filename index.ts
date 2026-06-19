@@ -1,4 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
+import { autoUpdate } from "opencode-plugin-update-kit"
 import path from "path"
 import os from "os"
 import fs from "fs"
@@ -348,134 +349,15 @@ Do NOT use \`see_image\` for reading text files, use the \`read\` tool for those
 - To inspect a specific detail, pass a targeted \`question\` (e.g. "What error is shown in the terminal?").`
 
 const PKG_NAME = "opencode-see-image"
-const REGISTRY_LATEST = `https://registry.npmjs.org/${PKG_NAME}/latest`
-
-function currentVersion(): string | null {
-  // Try import.meta.url first (works when not bundled)
-  try {
-    const here = new URL(".", import.meta.url)
-    const pkgPath = new URL("package.json", here)
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"))
-    if (pkg.version) return pkg.version
-  } catch {}
-
-  // Fallback: walk up from import.meta.url looking for package.json with our name
-  try {
-    let dir = new URL(".", import.meta.url)
-    for (let i = 0; i < 10; i++) {
-      const pkgPath = new URL("package.json", dir)
-      try {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"))
-        if (pkg.name === PKG_NAME && pkg.version) return pkg.version
-      } catch {}
-      const parent = new URL("../", dir)
-      if (parent.href === dir.href) break
-      dir = parent
-    }
-  } catch {}
-
-  // Last resort: check the known opencode cache paths
-  try {
-    const cacheDir = path.join(os.homedir(), ".cache/opencode/packages")
-    if (fs.existsSync(cacheDir)) {
-      for (const sub of fs.readdirSync(cacheDir)) {
-        if (sub.startsWith(PKG_NAME)) {
-          const pkgPath = path.join(cacheDir, sub, "node_modules", PKG_NAME, "package.json")
-          try {
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"))
-            if (pkg.version) return pkg.version
-          } catch {}
-        }
-      }
-    }
-  } catch {}
-
-  return null
-}
-
-function semverGt(a: string, b: string): boolean {
-  const pa = a.split(".").map((n) => parseInt(n, 10) || 0)
-  const pb = b.split(".").map((n) => parseInt(n, 10) || 0)
-  for (let i = 0; i < 3; i++) {
-    const x = pa[i] ?? 0
-    const y = pb[i] ?? 0
-    if (x > y) return true
-    if (x < y) return false
-  }
-  return false
-}
-
-async function maybeAutoUpdate(
-  client: any,
-  $: any,
-  log: (msg: string, level?: string) => void,
-) {
-  log(`starting update check`, "debug")
-  const current = currentVersion()
-  if (!current) {
-    log(`could not determine current version`, "warn")
-    return
-  }
-  log(`current version: ${current}`, "debug")
-
-  let latest: string
-  try {
-    const res = await fetch(REGISTRY_LATEST, {
-      headers: { accept: "application/json" },
-    })
-    if (!res.ok) return
-    const data: any = await res.json()
-    latest = data?.version
-    if (!latest) return
-  } catch {
-    return
-  }
-
-  if (!semverGt(latest, current)) return
-
-  log(`update available: ${current} -> ${latest}; updating`, "info")
-
-  const specifier = `${PKG_NAME}@${latest}`
-  const opencodeBin =
-    process.env.OPENCODE_BIN ||
-    path.join(os.homedir(), ".opencode/bin/opencode")
-  try {
-    await $`${opencodeBin} plugin ${specifier} --force --global`.quiet()
-  } catch (e: any) {
-    try {
-      await $`opencode plugin ${specifier} --force --global`.quiet()
-    } catch (e2: any) {
-      log(`plugin update failed: ${e2?.message ?? e2}`, "warn")
-      return
-    }
-  }
-
-  log(`update applied: ${current} -> ${latest}; restart opencode to load`, "info")
-  try {
-    await client?.tui?.showToast?.({ body: { message: `${PKG_NAME} updated to ${latest}, restart opencode to apply`, variant: "success", duration: 86_400_000 } })
-  } catch {
-    // toast is non-critical, log already captured
-  }
-}
 
 const SeeImagePlugin: Plugin = async (ctx) => {
   const { client, $ } = ctx
 
-  const log = (message: string, level: string = "info") => {
-    try {
-      client?.app?.log?.({ body: { service: PKG_NAME, level, message } })
-    } catch {
-      // fallback for environments where client.app.log is unavailable
-      if (process.env.NODE_ENV !== "production") {
-        console.log(`[${PKG_NAME}] ${level}: ${message}`)
-      }
-    }
-  }
-
-  const version = currentVersion() || "unknown"
-  log(`plugin initialized v${version}`, "info")
-  maybeAutoUpdate(client, $, log).catch((e) => {
-    log(`auto-update error: ${e?.message ?? e}`, "warn")
+  autoUpdate({
+    pkgName: PKG_NAME,
+    client,
+    $,
+    importMeta: import.meta,
   })
 
   const seeImageTool = tool({

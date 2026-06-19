@@ -6,6 +6,7 @@
       "name": "opencode-see-image",
       "dependencies": {
         "@opencode-ai/plugin": "^1.15.0",
+        "opencode-plugin-update-kit": "^0.1.0",
       },
     },
   },
@@ -51,6 +52,8 @@
     "multipasta": ["multipasta@0.2.7", "", {}, "sha512-KPA58d68KgGil15oDqXjkUBEBYc00XvbPj5/X+dyzeo/lWm9Nc25pQRlf1D+gv4OpK7NM0J1odrbu9JNNGvynA=="],
 
     "node-gyp-build-optional-packages": ["node-gyp-build-optional-packages@5.2.2", "", { "dependencies": { "detect-libc": "^2.0.1" }, "bin": { "node-gyp-build-optional-packages": "bin.js", "node-gyp-build-optional-packages-optional": "optional.js", "node-gyp-build-optional-packages-test": "build-test.js" } }, "sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw=="],
+
+    "opencode-plugin-update-kit": ["opencode-plugin-update-kit@0.1.0", "", {}, "sha512-2pZ8H6QnMGN2drK0g0vHSUY7jW4sP3XItUljdZlw1iVJIhcu1sQxzEmRD6oF+T7kWRXU6uJmN9Koq9IGuyibwg=="],
 
     "path-key": ["path-key@3.1.1", "", {}, "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q=="],
 
