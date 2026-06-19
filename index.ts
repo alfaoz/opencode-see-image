@@ -11,6 +11,7 @@ const ENDPOINT =
   "https://opencode.ai/zen/go/v1/messages"
 const MODEL = process.env.SEE_IMAGE_MODEL || "minimax-m3"
 const PROVIDER_ID = process.env.SEE_IMAGE_PROVIDER || "opencode-go"
+const TIMEOUT = parseInt(process.env.SEE_IMAGE_TIMEOUT || "30000", 10)
 const API_VERSION = process.env.SEE_IMAGE_API_VERSION || "2023-06-01"
 const USER_AGENT =
   process.env.SEE_IMAGE_USER_AGENT ||
@@ -222,6 +223,10 @@ async function seeImageViaSDK(
         continue
       }
 
+      // Per-candidate timeout so a slow model doesn't hang forever
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), TIMEOUT)
+
       const result = await client.session.prompt({
         path: { id: sessionID },
         body: {
@@ -234,7 +239,9 @@ async function seeImageViaSDK(
           system:
             "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
         },
+        signal: controller.signal,
       })
+      clearTimeout(timer)
 
       const parts = result.data?.parts ?? []
       const text = (parts as any[])
