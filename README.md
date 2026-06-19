@@ -106,9 +106,11 @@ all settings are env-var overrides. The plugin uses opencode's SDK client by def
 | `SEE_IMAGE_STALL_TIMEOUT` | `60000` | Stall timeout in ms (SDK streaming). The call is only aborted if the vision model produces no new tokens for this long — so long transcriptions keep running as long as they're progressing. |
 | `SEE_IMAGE_MAX_TIMEOUT` | `0` | Absolute cap in ms on a single streaming call. `0` = no cap. |
 
-### streaming
+### live progress
 
-On the SDK path the plugin streams the vision model's output and shows live progress in the tool call (`see_image: reading… N chars`). Instead of a hard timeout, it uses a **stall timeout** (`SEE_IMAGE_STALL_TIMEOUT`): a slow-but-progressing model (e.g. transcribing a huge table) runs to completion, while a genuinely hung call is still reaped. If a call is cut short, whatever was streamed so far is returned rather than nothing.
+While the vision model works, the tool call shows an animated heartbeat bar plus live status, e.g. `see_image ░▒▓█▓▒░ reading… 1240 chars · 7s · minimax-m3`. The char count and a preview of the latest text update as tokens stream in, so you can see it's alive and watch the description form.
+
+The preferred path streams from the vision model via opencode's event stream and uses a **stall timeout** (`SEE_IMAGE_STALL_TIMEOUT`) instead of a hard cutoff: a slow-but-progressing model (e.g. transcribing a huge table) runs to completion, while a genuinely silent/hung call is reaped. If streaming isn't available or a call is cut short, the plugin falls back to a reliable non-streaming CLI call to the same model (full answer, no live preview), then to the free model.
 
 ### using a different vision model
 
