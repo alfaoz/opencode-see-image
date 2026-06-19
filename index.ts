@@ -522,7 +522,17 @@ const SeeImagePlugin: Plugin = async (ctx) => {
         .string()
         .optional()
         .describe(
-          "Optional specific question about the image. Defaults to a general detailed description.",
+          [
+            "What to ask the vision model. Omit for a general detailed description.",
+            "Tailor it to the situation for much better results:",
+            '- Reading/transcribing text or code: "Transcribe all text exactly, preserving layout, line breaks, and code indentation."',
+            '- An error or stack trace screenshot: "Quote the exact error message and stack trace, then state the likely cause."',
+            '- Reproducing a UI as code: "Describe the layout, components, text, colors, and spacing precisely enough to rebuild this UI in code."',
+            '- A technical diagram/architecture: "Explain this diagram: list each component and the relationships and data/flow direction between them."',
+            '- A chart/graph/dashboard: "Read this visualization: axes, series, key values, and the main takeaway."',
+            '- Comparing against an expected design: "Describe this UI in detail so it can be diffed against an expected layout (note any visible defects or misalignment)."',
+            "Otherwise pass the user's own specific question verbatim.",
+          ].join("\n"),
         ),
     },
     async execute(args, context) {
