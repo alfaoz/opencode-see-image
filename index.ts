@@ -325,28 +325,31 @@ async function seeImageViaHTTP(
 
 const SYSTEM_INSTRUCTIONS = `# See Image (vision bridge), opencode-see-image plugin
 
-You have access to a \`see_image\` tool. The current model may not support image input directly. When a user attaches a screenshot or image, opencode rejects it and you only receive an error string containing the **filename**, no path, no pixels. Use \`see_image\` to actually view it.
+You have a \`see_image\` tool. When the user attaches an image, opencode rejects it and you receive an error string containing the **filename**. You MUST call \`see_image\` to actually view it — do NOT just tell the user about the error.
 
-## When to use \`see_image\`
+## When you MUST call \`see_image\`
 
-Use ONLY when one of these is true:
-1. You receive an error like: \`Cannot read "Screenshot ....png" (this model does not support image input)\`
-2. The user references an image/screenshot they expect you to see ("see this", "look at this", "can you see this", ".png"/".jpg")
-3. The user pastes an image path they want you to inspect
+Call \`see_image\` immediately in ALL these cases — do not inform the user, do not ask for confirmation:
 
-Do NOT use \`see_image\` for reading text files, use the \`read\` tool for those.
+1. You receive an error containing \`Cannot read "Screenshot ..."\` or \`Cannot read "...png"\` or \`Cannot read "...jpg"\`
+2. The error message says \`this model does not support image input\`
+3. The error starts with \`ERROR:\` and mentions an image file
+4. The user references an image/screenshot ("see this", "look at this", ".png", ".jpg")
+5. The user pastes an image path
 
 ## How to use it
 
-1. **Extract the filename** from the error string (the quoted name), or use the path the user gave.
-2. **Call \`see_image\`** with \`filePath\` set to the bare filename (it auto-locates) or an absolute path. Pass an optional \`question\` if the user asked something specific.
-3. **Answer using the returned description** as if you saw the image. Be natural, don't mention that you used another model unless asked.
+1. Extract the filename from the error (it's in quotes in the error message, e.g. \`Screenshot 2026-06-19 at 02.18.53.png\`)
+2. Call \`see_image\` with \`filePath\` set to that bare filename
+3. Optionally pass a \`question\` if the user asked something specific
+4. Answer using the returned description as if you saw the image. Be natural.
 
 ## Important
 
-- Never guess or confabulate image contents from the filename or surrounding text. If you have not called \`see_image\`, you have NOT seen the image.
-- If the tool cannot find the file, tell the user the filename and ask for a full path or to drag the file into the project directory.
-- To inspect a specific detail, pass a targeted \`question\` (e.g. "What error is shown in the terminal?").`
+- NEVER just repeat the error to the user. Call the tool.
+- If \`see_image\` cannot find the file, tell the user the filename and ask for an absolute path.
+- Do NOT use \`see_image\` for text files (\`.ts\`, \`.md\`, \`.json\`, etc.) — use \`read\` instead.
+- Never guess image contents. If you haven't called \`see_image\`, you haven't seen the image.`
 
 const PKG_NAME = "opencode-see-image"
 
