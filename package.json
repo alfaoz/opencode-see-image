@@ -1,6 +1,6 @@
 {
   "name": "opencode-see-image",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Give non-vision opencode models the ability to see images/screenshots by routing them to a vision-capable model (MiniMax M3 via opencode-go by default).",
   "type": "module",
   "main": "index.ts",
@@ -23,6 +23,6 @@
   "license": "MIT",
   "dependencies": {
     "@opencode-ai/plugin": "^1.15.0",
-    "opencode-plugin-update-kit": "^0.1.0"
+    "opencode-plugin-update-kit": "^0.2.0"
   }
 }

@@ -218,7 +218,6 @@ function readProviderKey(providerID: string): string | null {
 
 async function seeImageViaSDK(
   client: any,
-  $: any,
   dataUrl: string,
   mediaType: string,
   prompt: string,
@@ -226,28 +225,54 @@ async function seeImageViaSDK(
 ): Promise<{ text: string; model: string; provider: string }> {
   const errors: string[] = []
 
-  // Write image to a temp file so the server can read it directly. Use the
-  // real extension so the CLI can sniff the type correctly.
   const b64 = dataUrl.split(",")[1] || ""
   const ext =
     Object.entries(EXT_MEDIA).find(([, m]) => m === mediaType)?.[0] || "png"
-  const tmpPath = path.join(os.tmpdir(), `see-image-${Date.now()}.${ext}`)
-  try {
-    fs.writeFileSync(tmpPath, Buffer.from(b64, "base64"))
-  } catch {}
+
+  // The free CLI fallback needs the image on disk. Write it lazily and only
+  // once, so the common SDK/dataURL path never touches the filesystem. Use the
+  // real extension so the CLI can sniff the type correctly.
+  let tmpPath: string | null = null
+  const ensureTmpFile = (): string | null => {
+    if (tmpPath) return tmpPath
+    const p = path.join(os.tmpdir(), `see-image-${Date.now()}.${ext}`)
+    try {
+      fs.writeFileSync(p, Buffer.from(b64, "base64"))
+      tmpPath = p
+    } catch {
+      return null
+    }
+    return tmpPath
+  }
 
   // For free opencode models, use CLI instead of SDK (SDK returns empty).
-  // Bun's $ doesn't accept an AbortSignal, so race the output against a
-  // timeout to actually bound how long a slow model can hang us.
+  // Use Bun.spawn (not $) so we get a killable handle: Bun's $ ShellPromise
+  // has no .kill(), so racing it against a timeout would leak the process.
+  // We kill the child on both timeout and external abort.
   const freeFallback = async (modelID: string, userPrompt: string): Promise<string | null> => {
+    const filePath = ensureTmpFile()
+    if (!filePath) return null
+    const proc = Bun.spawn(
+      [
+        "opencode",
+        "run",
+        "-f",
+        filePath,
+        "-m",
+        `opencode/${modelID}`,
+        userPrompt,
+        "--format",
+        "json",
+        "--dangerously-skip-permissions",
+      ],
+      { stdout: "pipe", stderr: "ignore" },
+    )
+    const timer = setTimeout(() => proc.kill(), TIMEOUT)
+    const onAbort = () => proc.kill()
+    abort?.addEventListener("abort", onAbort)
     try {
-      const proc = $`opencode run -f ${tmpPath} -m opencode/${modelID} ${userPrompt} --format json --dangerously-skip-permissions`.nothrow()
-      const out = await Promise.race([
-        proc.text(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`timed out after ${TIMEOUT}ms`)), TIMEOUT),
-        ),
-      ])
+      const out = await new Response(proc.stdout).text()
+      await proc.exited
       for (const line of out.split("\n").filter(Boolean)) {
         try {
           const parsed = JSON.parse(line)
@@ -256,7 +281,10 @@ async function seeImageViaSDK(
           }
         } catch {}
       }
-    } catch {}
+    } catch {} finally {
+      clearTimeout(timer)
+      abort?.removeEventListener("abort", onAbort)
+    }
     return null
   }
 
@@ -286,7 +314,15 @@ async function seeImageViaSDK(
 
       let sessionID: string | undefined
       try {
-        const sessionRes = await client.session.create({ body: {} })
+        const sessionRes = await Promise.race([
+          client.session.create({ body: {} }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`session.create timed out after ${TIMEOUT}ms`)),
+              TIMEOUT,
+            ),
+          ),
+        ])
         sessionID = sessionRes.data?.id
         if (!sessionID) {
           errors.push(`${providerID}/${modelID}: no session ID`)
@@ -344,7 +380,10 @@ async function seeImageViaSDK(
 
     if (!result) {
       const apiKey =
-        process.env.SEE_IMAGE_API_KEY || readProviderKey("opencode-go")
+        process.env.SEE_IMAGE_API_KEY ||
+        (process.env.SEE_IMAGE_PROVIDER &&
+          readProviderKey(process.env.SEE_IMAGE_PROVIDER)) ||
+        readProviderKey("opencode-go")
       if (apiKey) {
         try {
           result = await seeImageViaHTTP(b64, mediaType, prompt, abort, apiKey)
@@ -364,7 +403,9 @@ async function seeImageViaSDK(
       `see_image: SDK vision call failed for all candidates. ${errMsg}.${hint}`,
     )
   } finally {
-    try { fs.unlinkSync(tmpPath) } catch {}
+    if (tmpPath) {
+      try { fs.unlinkSync(tmpPath) } catch {}
+    }
   }
 }
 
@@ -500,7 +541,6 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       } else {
         result = await seeImageViaSDK(
           client,
-          $,
           resolved.dataUrl,
           resolved.mediaType,
           prompt,
