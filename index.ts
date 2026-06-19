@@ -571,16 +571,6 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       }
       render()
       const heartbeat = setInterval(render, 500)
-      // One-shot toast so there's immediate visible feedback that it started,
-      // since not every TUI repaints a running tool's title. Best-effort.
-      try {
-        client?.tui?.showToast?.({
-          body: {
-            message: `👁 see_image: looking at ${args.filePath}…`,
-            variant: "info",
-          },
-        })
-      } catch {}
 
       try {
         if (process.env.SEE_IMAGE_API_KEY) {
