@@ -43,12 +43,32 @@ type ResolvedImage = {
   source: string
 }
 
+// Candidate opencode data directories, in priority order. opencode itself uses
+// xdg-basedir, which falls back to ~/.local/share/opencode when XDG_DATA_HOME is
+// unset (the norm on Windows) — but some setups put it under native app dirs, so
+// we probe several and let the caller pick whichever actually has the file.
+function opencodeDataDirs(): string[] {
+  const dirs: string[] = []
+  if (process.env.OPENCODE_DATA_DIR) dirs.push(process.env.OPENCODE_DATA_DIR)
+  if (process.env.XDG_DATA_HOME)
+    dirs.push(path.join(process.env.XDG_DATA_HOME, "opencode"))
+  dirs.push(path.join(os.homedir(), ".local/share/opencode"))
+  if (process.platform === "win32") {
+    if (process.env.LOCALAPPDATA)
+      dirs.push(path.join(process.env.LOCALAPPDATA, "opencode"))
+    if (process.env.APPDATA)
+      dirs.push(path.join(process.env.APPDATA, "opencode"))
+  }
+  return dirs
+}
+
 function opencodeDbPath(): string {
-  const dataDir =
-    process.env.OPENCODE_DATA_DIR ||
-    process.env.XDG_DATA_HOME ||
-    path.join(os.homedir(), ".local/share/opencode")
-  return path.join(dataDir, "opencode.db")
+  const dirs = opencodeDataDirs()
+  for (const dir of dirs) {
+    const p = path.join(dir, "opencode.db")
+    if (fs.existsSync(p)) return p
+  }
+  return path.join(dirs[dirs.length - 1], "opencode.db")
 }
 
 function resolveFromDb(
@@ -127,6 +147,49 @@ function resolveFromDb(
   }
 }
 
+// Where a bare screenshot filename might live, per platform. The DB lookup is
+// the cross-platform primary path; this is the fallback for files not yet in the
+// DB (e.g. a screenshot just saved to disk).
+function screenshotSearchDirs(cwd: string): string[] {
+  const home = os.homedir()
+  const dirs: string[] = []
+
+  if (process.platform === "win32") {
+    // Win+PrtScn and Snipping Tool save here (plus the OneDrive-redirected
+    // variant), and dragged/temp images land in %TEMP%.
+    if (process.env.TEMP) dirs.push(process.env.TEMP)
+    if (process.env.TMP && process.env.TMP !== process.env.TEMP)
+      dirs.push(process.env.TMP)
+    dirs.push(path.join(home, "Pictures", "Screenshots"))
+    dirs.push(path.join(home, "OneDrive", "Pictures", "Screenshots"))
+    dirs.push(path.join(home, "Pictures"))
+  } else if (process.platform === "darwin") {
+    const tmpdir = process.env.TMPDIR || "/tmp"
+    const tempItems = path.join(tmpdir, "TemporaryItems")
+    if (fs.existsSync(tempItems)) {
+      try {
+        for (const sub of fs.readdirSync(tempItems, { withFileTypes: true })) {
+          if (sub.isDirectory() && sub.name.startsWith("NSIRD_screencaptureui")) {
+            dirs.push(path.join(tempItems, sub.name))
+          }
+        }
+      } catch {}
+    }
+    dirs.push(tempItems)
+  } else {
+    // Linux: GNOME/KDE screenshot tools default to ~/Pictures/Screenshots.
+    if (process.env.TMPDIR) dirs.push(process.env.TMPDIR)
+    dirs.push("/tmp")
+    dirs.push(path.join(home, "Pictures", "Screenshots"))
+    dirs.push(path.join(home, "Pictures"))
+  }
+
+  dirs.push(path.join(home, "Desktop"))
+  dirs.push(path.join(home, "Downloads"))
+  dirs.push(cwd)
+  return dirs
+}
+
 function resolveFromFilesystem(
   name: string,
   cwd: string,
@@ -146,25 +209,7 @@ function resolveFromFilesystem(
   }
 
   if (!absPath) {
-    const tmpdir = process.env.TMPDIR || "/tmp"
-    const searchDirs: string[] = []
-    const tempItems = path.join(tmpdir, "TemporaryItems")
-    if (fs.existsSync(tempItems)) {
-      try {
-        for (const sub of fs.readdirSync(tempItems, { withFileTypes: true })) {
-          if (
-            sub.isDirectory() &&
-            sub.name.startsWith("NSIRD_screencaptureui")
-          ) {
-            searchDirs.push(path.join(tempItems, sub.name))
-          }
-        }
-      } catch {}
-    }
-    searchDirs.push(tempItems)
-    searchDirs.push(path.join(os.homedir(), "Desktop"))
-    searchDirs.push(path.join(os.homedir(), "Downloads"))
-    searchDirs.push(cwd)
+    const searchDirs = screenshotSearchDirs(cwd)
 
     for (const dir of searchDirs) {
       if (!dir) continue
@@ -209,18 +254,13 @@ function resolveImage(name: string, cwd: string, sessionID?: string): ResolvedIm
 
 function readProviderKey(providerID: string): string | null {
   try {
-    const xdgDataHome = process.env.XDG_DATA_HOME
-      ? path.join(process.env.XDG_DATA_HOME, "opencode")
-      : ""
-    const dataDir =
-      process.env.OPENCODE_DATA_DIR ||
-      xdgDataHome ||
-      path.join(os.homedir(), ".local/share/opencode")
-    const authPath = path.join(dataDir, "auth.json")
-    if (!fs.existsSync(authPath)) return null
-    const auth = JSON.parse(fs.readFileSync(authPath, "utf8"))
-    const entry = auth[providerID]
-    if (entry?.type === "api" && entry?.key) return entry.key
+    for (const dir of opencodeDataDirs()) {
+      const authPath = path.join(dir, "auth.json")
+      if (!fs.existsSync(authPath)) continue
+      const auth = JSON.parse(fs.readFileSync(authPath, "utf8"))
+      const entry = auth[providerID]
+      if (entry?.type === "api" && entry?.key) return entry.key
+    }
     return null
   } catch {
     return null
@@ -308,7 +348,12 @@ async function seeImageViaSDK(
     if (envProvider && envModel) {
       candidates.push({ providerID: envProvider, modelID: envModel })
     }
-    candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
+    // Only try the paid opencode-go model if the user actually has that sub
+    // connected. Free/Zen-only users otherwise hit a fatal
+    // ProviderModelNotFoundError before ever reaching the free fallback below.
+    if (envProvider !== "opencode-go" && readProviderKey("opencode-go")) {
+      candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
+    }
     candidates.push({ providerID: "opencode", modelID: "mimo-v2.5-free" })
 
     for (const { providerID, modelID } of candidates) {
@@ -613,4 +658,10 @@ const SeeImagePlugin: Plugin = async (ctx) => {
 }
 
 export default SeeImagePlugin
-export { SeeImagePlugin }
+export {
+  SeeImagePlugin,
+  opencodeDataDirs,
+  opencodeDbPath,
+  screenshotSearchDirs,
+  resolveImage,
+}

@@ -42,7 +42,7 @@ you need a connected vision-capable provider. The plugin auto-detects whichever 
 2. select **opencode** (OpenCode Zen)
 3. paste your API key from [opencode.ai/auth](https://opencode.ai/auth)
 
-the plugin falls back to **mimo-v2.5-free**.
+the plugin uses **mimo-v2.5-free** automatically — if you don't have an OpenCode Go sub, it skips the paid model entirely (no errors) and routes to the free model.
 
 ### paid, w/ OpenCode Go
 1. run `/connect` in opencode
@@ -55,7 +55,7 @@ the plugin prefers **minimax-m3** via opencode-go when available.
 
 set the `SEE_IMAGE_*` env vars to point at any Anthropic-Messages-compatible endpoint. see [Configuration](#configuration) below.
 
-**the resolve order:** explicit `SEE_IMAGE_API_KEY` env → configured `SEE_IMAGE_PROVIDER` → `opencode-go` (MiniMax M3) → `opencode` (mimo-v2.5-free).
+**the resolve order:** explicit `SEE_IMAGE_API_KEY` env → configured `SEE_IMAGE_PROVIDER` → `opencode-go` (MiniMax M3) *if you have a Go sub connected* → `opencode` (mimo-v2.5-free). If no Go sub is connected, `opencode-go` is skipped so free users never hit a "model not found" error.
 
 ## how the _eye surgery_ works
 
@@ -153,20 +153,29 @@ then restart opencode.
 "plugin": ["opencode-see-image@0.4.2"]
 ```
 
-## kimitations
+## platform support
 
-- **macOS-only filesystem search**. the filesystem fallback targets macOS screenshot temp dirs. Linux/Windows users should rely on the DB lookup (which is cross-platform) or pass absolute paths.
-> if you can add compat for more platforms, i would love a pr.
+works on **macOS, Windows, and Linux**. The DB lookup is cross-platform; the filesystem fallback now searches per-platform screenshot locations (see below). The plugin probes several opencode data-dir locations so the DB and auth keys are found wherever opencode stored them.
 
 ## file search locations
 
-when opencode rejects an image attachment, the model only receives a bare filename. `see_image` searches these locations in order:
+when opencode rejects an image attachment, the model only receives a bare filename. `see_image` first checks the opencode DB (cross-platform), then falls back to searching these filesystem locations, in order:
 
+**macOS**
 1. `$TMPDIR/TemporaryItems/NSIRD_screencaptureui_*/` (where macOS stashes dragged screenshots)
 2. `$TMPDIR/TemporaryItems/`
-3. `~/Desktop` (default screenshot save location)
-4. `~/Downloads`
-5. current working directory
+3. `~/Desktop`, `~/Downloads`, current working directory
+
+**Windows**
+1. `%TEMP%` / `%TMP%` (dragged/temp images)
+2. `%USERPROFILE%\Pictures\Screenshots` and the OneDrive-redirected `%USERPROFILE%\OneDrive\Pictures\Screenshots` (Win+PrtScn / Snipping Tool)
+3. `%USERPROFILE%\Pictures`
+4. `~\Desktop`, `~\Downloads`, current working directory
+
+**Linux**
+1. `$TMPDIR` / `/tmp`
+2. `~/Pictures/Screenshots`, `~/Pictures`
+3. `~/Desktop`, `~/Downloads`, current working directory
 
 pass an absolute `filePath` to skip the search.
 
