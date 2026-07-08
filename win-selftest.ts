@@ -66,7 +66,7 @@ process.env.TMP = tempDir
 
 // Import the REAL code only after the environment is faked.
 const { opencodeDataDirs, opencodeDbPath, screenshotSearchDirs, resolveImage } =
-  await import("./index.ts")
+  await import("./lib.ts")
 
 // --- assertions -------------------------------------------------------------
 let pass = 0
@@ -115,7 +115,7 @@ check(
 )
 
 try {
-  const r = resolveImage("clipboard", process.cwd())
+  const r = await resolveImage("clipboard", process.cwd())
   check(
     "resolveImage('clipboard') pulls image from DB schema",
     r.source === "opencode-db" && r.dataUrl.startsWith("data:image/png"),
@@ -126,7 +126,7 @@ try {
 }
 
 try {
-  const r = resolveImage("Screenshot 2026-06-22.png", process.cwd())
+  const r = await resolveImage("Screenshot 2026-06-22.png", process.cwd())
   check(
     "resolveImage(filename not in DB) falls back to Pictures\\Screenshots",
     r.source === path.join(screenshotsDir, "Screenshot 2026-06-22.png"),

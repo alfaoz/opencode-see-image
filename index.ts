@@ -3,8 +3,9 @@ import { autoUpdate } from "opencode-plugin-update-kit"
 import path from "path"
 import os from "os"
 import fs from "fs"
-import { Database } from "bun:sqlite"
+import { spawn } from "node:child_process"
 import type { Plugin } from "@opencode-ai/plugin"
+import { EXT_MEDIA, opencodeDataDirs, resolveImage } from "./lib.ts"
 
 const ENDPOINT =
   process.env.SEE_IMAGE_ENDPOINT ||
@@ -28,228 +29,28 @@ function heartbeatBar(tick: number, width = 12): string {
   return s
 }
 
-const EXT_MEDIA: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  bmp: "image/bmp",
-}
-
-type ResolvedImage = {
-  dataUrl: string
-  mediaType: string
-  source: string
-}
-
-// Candidate opencode data directories, in priority order. opencode itself uses
-// xdg-basedir, which falls back to ~/.local/share/opencode when XDG_DATA_HOME is
-// unset (the norm on Windows) — but some setups put it under native app dirs, so
-// we probe several and let the caller pick whichever actually has the file.
-function opencodeDataDirs(): string[] {
-  const dirs: string[] = []
-  if (process.env.OPENCODE_DATA_DIR) dirs.push(process.env.OPENCODE_DATA_DIR)
-  if (process.env.XDG_DATA_HOME)
-    dirs.push(path.join(process.env.XDG_DATA_HOME, "opencode"))
-  dirs.push(path.join(os.homedir(), ".local/share/opencode"))
-  if (process.platform === "win32") {
-    if (process.env.LOCALAPPDATA)
-      dirs.push(path.join(process.env.LOCALAPPDATA, "opencode"))
-    if (process.env.APPDATA)
-      dirs.push(path.join(process.env.APPDATA, "opencode"))
-  }
-  return dirs
-}
-
-function opencodeDbPath(): string {
-  const dirs = opencodeDataDirs()
-  for (const dir of dirs) {
-    const p = path.join(dir, "opencode.db")
-    if (fs.existsSync(p)) return p
-  }
-  return path.join(dirs[dirs.length - 1], "opencode.db")
-}
-
-function resolveFromDb(
-  filename: string,
-  sessionID?: string,
-): ResolvedImage | null {
-  const dbPath = opencodeDbPath()
-  if (!fs.existsSync(dbPath)) return null
-
-  let db: Database | undefined
-  try {
-    db = new Database(dbPath, { readonly: true })
-    let rows: Array<{ data: string }>
-
-    if (!filename || filename === "clipboard") {
-      // No filename: get the most recent file part, scoped to the current
-      // session if known so we don't grab an image pasted into a different
-      // conversation.
-      if (sessionID) {
-        rows = db
-          .query(
-            `SELECT data FROM part
-             WHERE session_id = ?
-               AND json_extract(data, '$.type') = 'file'
-               AND json_extract(data, '$.url') LIKE 'data:%'
-             ORDER BY time_created DESC LIMIT 1`,
-          )
-          .all(sessionID) as Array<{ data: string }>
-      } else {
-        rows = db
-          .query(
-            `SELECT data FROM part
-             WHERE json_extract(data, '$.type') = 'file'
-               AND json_extract(data, '$.url') LIKE 'data:%'
-             ORDER BY time_created DESC LIMIT 1`,
-          )
-          .all() as Array<{ data: string }>
-      }
-    } else {
-      if (sessionID) {
-        rows = db
-          .query(
-            `SELECT data FROM part
-             WHERE session_id = ?
-               AND json_extract(data, '$.type') = 'file'
-               AND json_extract(data, '$.filename') = ?
-             ORDER BY time_created DESC LIMIT 1`,
-          )
-          .all(sessionID, filename) as Array<{ data: string }>
-      } else {
-        rows = db
-          .query(
-            `SELECT data FROM part
-             WHERE json_extract(data, '$.type') = 'file'
-               AND json_extract(data, '$.filename') = ?
-             ORDER BY time_created DESC LIMIT 1`,
-          )
-          .all(filename) as Array<{ data: string }>
-      }
-    }
-
-    if (!rows.length) return null
-    const part = JSON.parse(rows[0].data)
-    const url: string = part.url || ""
-    if (!url.startsWith("data:")) return null
-
-    return {
-      dataUrl: url,
-      mediaType: part.mime || "image/png",
-      source: "opencode-db",
-    }
-  } catch {
-    return null
-  } finally {
-    db?.close()
-  }
-}
-
-// Where a bare screenshot filename might live, per platform. The DB lookup is
-// the cross-platform primary path; this is the fallback for files not yet in the
-// DB (e.g. a screenshot just saved to disk).
-function screenshotSearchDirs(cwd: string): string[] {
-  const home = os.homedir()
-  const dirs: string[] = []
-
-  if (process.platform === "win32") {
-    // Win+PrtScn and Snipping Tool save here (plus the OneDrive-redirected
-    // variant), and dragged/temp images land in %TEMP%.
-    if (process.env.TEMP) dirs.push(process.env.TEMP)
-    if (process.env.TMP && process.env.TMP !== process.env.TEMP)
-      dirs.push(process.env.TMP)
-    dirs.push(path.join(home, "Pictures", "Screenshots"))
-    dirs.push(path.join(home, "OneDrive", "Pictures", "Screenshots"))
-    dirs.push(path.join(home, "Pictures"))
-  } else if (process.platform === "darwin") {
-    const tmpdir = process.env.TMPDIR || "/tmp"
-    const tempItems = path.join(tmpdir, "TemporaryItems")
-    if (fs.existsSync(tempItems)) {
-      try {
-        for (const sub of fs.readdirSync(tempItems, { withFileTypes: true })) {
-          if (sub.isDirectory() && sub.name.startsWith("NSIRD_screencaptureui")) {
-            dirs.push(path.join(tempItems, sub.name))
-          }
-        }
-      } catch {}
-    }
-    dirs.push(tempItems)
-  } else {
-    // Linux: GNOME/KDE screenshot tools default to ~/Pictures/Screenshots.
-    if (process.env.TMPDIR) dirs.push(process.env.TMPDIR)
-    dirs.push("/tmp")
-    dirs.push(path.join(home, "Pictures", "Screenshots"))
-    dirs.push(path.join(home, "Pictures"))
-  }
-
-  dirs.push(path.join(home, "Desktop"))
-  dirs.push(path.join(home, "Downloads"))
-  dirs.push(cwd)
-  return dirs
-}
-
-function resolveFromFilesystem(
-  name: string,
-  cwd: string,
-): ResolvedImage | null {
-  let absPath: string | null = null
-
-  // Expand tilde to home directory
-  if (name.startsWith("~")) {
-    name = path.join(os.homedir(), name.slice(1))
-  }
-
-  if (path.isAbsolute(name) && fs.existsSync(name)) {
-    absPath = name
-  } else {
-    const resolved = path.resolve(cwd, name)
-    if (fs.existsSync(resolved)) absPath = resolved
-  }
-
-  if (!absPath) {
-    const searchDirs = screenshotSearchDirs(cwd)
-
-    for (const dir of searchDirs) {
-      if (!dir) continue
-      try {
-        const full = path.join(dir, name)
-        if (fs.existsSync(full)) {
-          absPath = full
-          break
-        }
-      } catch {}
-    }
-  }
-
-  if (!absPath || !fs.existsSync(absPath)) return null
-
-  const ext = path.extname(absPath).slice(1).toLowerCase()
-  const mediaType = EXT_MEDIA[ext] || "image/png"
-  const b64 = Buffer.from(fs.readFileSync(absPath)).toString("base64")
-
+// The desktop app's server runs on Node, where the plugin context has no Bun
+// shell — cover autoUpdate's `$` usage with a child_process-based stand-in.
+function shellFallback(strings: TemplateStringsArray, ...values: unknown[]) {
+  const tokens: string[] = []
+  strings.forEach((chunk, i) => {
+    for (const t of chunk.split(/\s+/)) if (t) tokens.push(t)
+    if (i < values.length && values[i] != null) tokens.push(String(values[i]))
+  })
+  const run = new Promise<void>((resolve, reject) => {
+    const proc = spawn(tokens[0], tokens.slice(1), { stdio: "ignore" })
+    proc.on("error", reject)
+    proc.on("close", (code) =>
+      code === 0 ? resolve() : reject(new Error(`${tokens[0]} exited with ${code}`)),
+    )
+  })
+  run.catch(() => {})
   return {
-    dataUrl: `data:${mediaType};base64,${b64}`,
-    mediaType,
-    source: absPath,
+    quiet: () => run,
+    then: run.then.bind(run),
+    catch: run.catch.bind(run),
+    finally: run.finally.bind(run),
   }
-}
-
-function resolveImage(name: string, cwd: string, sessionID?: string): ResolvedImage {
-  // DB first: handles clipboard pastes, dragged files, screenshots.
-  // For "clipboard" or empty name, gets the most recent file part.
-  // Scoped to the current session if known.
-  const fromDb = resolveFromDb(name, sessionID)
-  if (fromDb) return fromDb
-
-  // Filesystem fallback for files not yet in the DB.
-  const fromFs = resolveFromFilesystem(name, cwd)
-  if (fromFs) return fromFs
-
-  throw new Error(
-    `see_image: could not find "${name}". Searched opencode DB and filesystem. Pass an absolute filePath instead.`,
-  )
 }
 
 function readProviderKey(providerID: string): string | null {
@@ -297,46 +98,53 @@ async function seeImageViaSDK(
   }
 
   // For free opencode models, use CLI instead of SDK (SDK returns empty).
-  // Use Bun.spawn (not $) so we get a killable handle: Bun's $ ShellPromise
-  // has no .kill(), so racing it against a timeout would leak the process.
-  // We kill the child on both timeout and external abort.
+  // child_process.spawn works on both Bun and Node and gives us a killable
+  // handle; we kill the child on both timeout and external abort.
   const freeFallback = async (modelID: string, userPrompt: string): Promise<string | null> => {
     const filePath = ensureTmpFile()
     if (!filePath) return null
-    const proc = Bun.spawn(
-      [
+    return await new Promise<string | null>((resolve) => {
+      let out = ""
+      let settled = false
+      const proc = spawn(
         "opencode",
-        "run",
-        "-f",
-        filePath,
-        "-m",
-        `opencode/${modelID}`,
-        userPrompt,
-        "--format",
-        "json",
-        "--dangerously-skip-permissions",
-      ],
-      { stdout: "pipe", stderr: "ignore" },
-    )
-    const timer = setTimeout(() => proc.kill(), TIMEOUT)
-    const onAbort = () => proc.kill()
-    abort?.addEventListener("abort", onAbort)
-    try {
-      const out = await new Response(proc.stdout).text()
-      await proc.exited
-      for (const line of out.split("\n").filter(Boolean)) {
-        try {
-          const parsed = JSON.parse(line)
-          if (parsed?.part?.type === "text" && parsed?.part?.text) {
-            return parsed.part.text
-          }
-        } catch {}
+        [
+          "run",
+          "-f",
+          filePath,
+          "-m",
+          `opencode/${modelID}`,
+          userPrompt,
+          "--format",
+          "json",
+          "--dangerously-skip-permissions",
+        ],
+        { stdio: ["ignore", "pipe", "ignore"] },
+      )
+      const timer = setTimeout(() => proc.kill(), TIMEOUT)
+      const onAbort = () => proc.kill()
+      abort?.addEventListener("abort", onAbort)
+      const finish = (value: string | null) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        abort?.removeEventListener("abort", onAbort)
+        resolve(value)
       }
-    } catch {} finally {
-      clearTimeout(timer)
-      abort?.removeEventListener("abort", onAbort)
-    }
-    return null
+      proc.stdout?.on("data", (chunk) => (out += chunk))
+      proc.on("error", () => finish(null))
+      proc.on("close", () => {
+        for (const line of out.split("\n").filter(Boolean)) {
+          try {
+            const parsed = JSON.parse(line)
+            if (parsed?.part?.type === "text" && parsed?.part?.text) {
+              return finish(parsed.part.text)
+            }
+          } catch {}
+        }
+        finish(null)
+      })
+    })
   }
 
   let result: { text: string; model: string; provider: string } | undefined
@@ -527,7 +335,7 @@ async function seeImageViaHTTP(
 
 const SYSTEM_INSTRUCTIONS = `# See Image (vision bridge), opencode-see-image plugin
 
-You have a \`see_image\` tool. When the user attaches an image, opencode rejects it and you receive an error string containing the **filename**. You MUST call \`see_image\` to actually view it — do NOT just tell the user about the error.
+You have a \`see_image\` tool. When the user attaches an image, this model cannot view it directly — you may receive an error string containing the **filename**, a placeholder like \`[Image #1]\`, or nothing at all. You MUST call \`see_image\` to actually view it — do NOT just tell the user you can't see images.
 
 ## When you MUST call \`see_image\`
 
@@ -536,20 +344,21 @@ Call \`see_image\` immediately in ALL these cases — do not inform the user, do
 1. You receive an error containing \`Cannot read "Screenshot ..."\` or \`Cannot read "...png"\` or \`Cannot read "...jpg"\`
 2. The error message says \`this model does not support image input\`
 3. The error starts with \`ERROR:\` and mentions an image file
-4. The user references an image/screenshot ("see this", "look at this", ".png", ".jpg")
-5. The user pastes an image path
+4. The user's message contains an image attachment or a placeholder like \`[Image #1]\`
+5. The user references an image/screenshot ("see this", "look at this", ".png", ".jpg")
+6. The user pastes an image path
 
 ## How to use it
 
-1. Extract the filename from the error (it's in quotes in the error message, e.g. \`Screenshot 2026-06-19 at 02.18.53.png\`)
-2. Call \`see_image\` with \`filePath\` set to that bare filename
+1. If you know the filename (from an error message or the user), pass it as \`filePath\` — the bare filename is fine, e.g. \`Screenshot 2026-06-19 at 02.18.53.png\`
+2. If you do NOT know the filename (e.g. a pasted/attached image with no name), call \`see_image\` with NO \`filePath\` — it automatically uses the most recent image attached to this conversation
 3. Optionally pass a \`question\` if the user asked something specific
 4. Answer using the returned description as if you saw the image. Be natural.
 
 ## Important
 
 - NEVER just repeat the error to the user. Call the tool.
-- If \`see_image\` cannot find the file, tell the user the filename and ask for an absolute path.
+- If \`see_image\` fails, its error message lists the images attached to this session — retry with one of those exact filenames.
 - Do NOT use \`see_image\` for text files (\`.ts\`, \`.md\`, \`.json\`, etc.) — use \`read\` instead.
 - Never guess image contents. If you haven't called \`see_image\`, you haven't seen the image.`
 
@@ -561,18 +370,19 @@ const SeeImagePlugin: Plugin = async (ctx) => {
   autoUpdate({
     pkgName: PKG_NAME,
     client,
-    $,
+    $: $ ?? shellFallback,
     importMeta: import.meta,
   })
 
   const seeImageTool = tool({
     description:
-      'See an image/screenshot that the current model cannot view. Use when the user attaches an image and you get a "this model does not support image input" / "Cannot read" error, or when a screenshot/image is referenced ("see this", "can you see", .png/.jpg). Routes the image to a vision-capable model and returns a detailed textual description you can reason about as if you saw it. Pass filePath as an absolute path OR a bare filename (auto-located from opencode DB or filesystem).',
+      'See an image/screenshot that the current model cannot view. Use when the user attaches an image and you get a "this model does not support image input" / "Cannot read" error, when the message contains an image placeholder like [Image #1], or when a screenshot/image is referenced ("see this", "can you see", .png/.jpg). Routes the image to a vision-capable model and returns a detailed textual description you can reason about as if you saw it. Pass filePath as an absolute path or bare filename, or omit it to use the most recently attached image in this conversation.',
     args: {
       filePath: tool.schema
         .string()
+        .optional()
         .describe(
-          'Path to the image. Absolute path, or a bare filename like "Screenshot 2026-06-18 at 17.32.24.png" to auto-locate.',
+          'Path to the image. Absolute path, or a bare filename like "Screenshot 2026-06-18 at 17.32.24.png" to auto-locate. Omit entirely (or pass "latest") to use the most recent image attached to this conversation.',
         ),
       question: tool.schema
         .string()
@@ -592,7 +402,12 @@ const SeeImagePlugin: Plugin = async (ctx) => {
         ),
     },
     async execute(args, context) {
-      const resolved = resolveImage(args.filePath, context.directory, context.sessionID)
+      const resolved = await resolveImage(
+        args.filePath || "",
+        context.directory,
+        context.sessionID,
+        client,
+      )
 
       const prompt =
         args.question && args.question.trim().length > 0
@@ -602,9 +417,8 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       let result: { text: string; model: string; provider: string }
 
       // Animated heartbeat while we wait. Runs on a timer independent of the
-      // vision call — it only updates the tool title/metadata and a startup
-      // toast, so it can never affect whether the image is seen. The vision
-      // call below is identical to 0.9.3.
+      // vision call — it only updates the tool title/metadata, so it can never
+      // affect whether the image is seen.
       const started = Date.now()
       let tick = 0
       const render = () => {
@@ -635,7 +449,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       }
 
       context.metadata({
-        title: `see_image: ${args.filePath}`,
+        title: `see_image: ${args.filePath || "latest image"}`,
         metadata: {
           model: result.model,
           provider: result.provider,
@@ -657,11 +471,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
   }
 }
 
+// The ONLY export. opencode's legacy plugin loader invokes every exported
+// function as a plugin factory, so helper exports here would crash the whole
+// plugin at load time (this actually happened — helpers live in lib.ts now).
 export default SeeImagePlugin
-export {
-  SeeImagePlugin,
-  opencodeDataDirs,
-  opencodeDbPath,
-  screenshotSearchDirs,
-  resolveImage,
-}

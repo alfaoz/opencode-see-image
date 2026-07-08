@@ -1,18 +1,21 @@
 {
   "name": "opencode-see-image",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Give non-vision opencode models the ability to see images/screenshots by routing them to a vision-capable model (MiniMax M3 via opencode-go by default).",
   "type": "module",
-  "main": "index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./index.ts"
+    ".": "./dist/index.js"
   },
   "files": [
-    "index.ts"
+    "dist",
+    "index.ts",
+    "lib.ts"
   ],
   "scripts": {
-    "build": "bun build index.ts --target=bun --outdir dist",
-    "typecheck": "bun build index.ts --target=bun --outdir /tmp/see-image-check"
+    "build": "bun build index.ts --target=node --format=esm --outdir=dist --external bun:sqlite",
+    "typecheck": "bun build index.ts --target=node --format=esm --outdir=/tmp/see-image-check --external bun:sqlite",
+    "prepublishOnly": "bun run build"
   },
   "keywords": [
     "opencode",

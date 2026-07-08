@@ -14,7 +14,7 @@ import {
   opencodeDbPath,
   screenshotSearchDirs,
   resolveImage,
-} from "./index.ts"
+} from "./lib.ts"
 
 const target = process.argv[2] || "clipboard"
 const cwd = process.cwd()
@@ -43,7 +43,7 @@ console.log()
 
 console.log(`resolving image: "${target}" ...`)
 try {
-  const r = resolveImage(target, cwd)
+  const r = await resolveImage(target, cwd)
   const bytes = Math.round(((r.dataUrl.split(",")[1] || "").length * 3) / 4)
   console.log("  ✓ RESOLVED")
   console.log("    source    :", r.source)

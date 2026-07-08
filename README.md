@@ -64,20 +64,28 @@ user attaches screenshot
         |
         v
 opencode rejects it: 'this model does not support image input'
-        |      (the model only sees the filename)
+        |      (the model only sees the filename, or nothing at all)
         v
 plugin's system-prompt instructions tell the model to call see_image
         |
         v
-see_image tool:
-  1. queries opencode's SQLite DB for the image
-  2. falls back to filesystem search if not in DB
-  3. sends the image to the vision model via opencode's SDK
-  4. returns the textual description
+see_image tool resolves the image:
+  1. asks the opencode server for the session's attachments (exact name,
+     then unicode-normalized name, then most recent image)
+  2. falls back to reading opencode's SQLite DB directly (this session,
+     then any session)
+  3. falls back to a filesystem search
+  4. if the name matched nothing but the session has an image, uses the
+     most recent one anyway
+        |
+        v
+sends the image to the vision model and returns the textual description
         |
         v
 primary model answers using the description
 ```
+
+if everything misses, the error message lists the images actually attached to the session so the model can retry with a correct filename.
 
 ## the `see_image` tool
 
@@ -85,7 +93,7 @@ the plugin registers a `see_image` tool with two arguments:
 
 | arg | type | required? | description |
 |---|---|---|---|
-| `filePath` | string | y | path to the image. Absolute path, or a bare filename like `"Screenshot 2026-06-18 at 17.32.24.png"` to auto-locate. |
+| `filePath` | string | n | path to the image. Absolute path, or a bare filename like `"Screenshot 2026-06-18 at 17.32.24.png"` to auto-locate. Omit (or pass `"latest"`) to use the most recent image attached to the conversation. |
 | `question` | string | n | a specific question about the image. Defaults to a general detailed description. Use this to focus on a particular detail (e.g. `"What error is shown in the terminal?"`). |
 
 your model calls this tool automatically when you attach a screenshot, you don't need to do anything special. The `question` arg is optional; the model uses it when you ask something specific about the image.
@@ -155,7 +163,7 @@ then restart opencode.
 
 ## platform support
 
-works on **macOS, Windows, and Linux**. The DB lookup is cross-platform; the filesystem fallback now searches per-platform screenshot locations (see below). The plugin probes several opencode data-dir locations so the DB and auth keys are found wherever opencode stored them.
+works on **macOS, Windows, and Linux**, in both the **CLI/TUI** (Bun runtime) and the **desktop app** (whose server runs on Node inside Electron). The package ships compiled JS and avoids Bun-only APIs at load time, so it loads on either runtime. Attachment lookup goes through the opencode server API first (works everywhere, including remote workspaces), with a direct SQLite read and a filesystem search as fallbacks.
 
 ## file search locations
 
