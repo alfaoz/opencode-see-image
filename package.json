@@ -1,6 +1,6 @@
 {
   "name": "opencode-see-image",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Give non-vision opencode models the ability to see images/screenshots by routing them to a vision-capable model (MiniMax M3 via opencode-go by default).",
   "type": "module",
   "main": "./dist/index.js",
