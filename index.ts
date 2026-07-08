@@ -29,30 +29,6 @@ function heartbeatBar(tick: number, width = 12): string {
   return s
 }
 
-// The desktop app's server runs on Node, where the plugin context has no Bun
-// shell — cover autoUpdate's `$` usage with a child_process-based stand-in.
-function shellFallback(strings: TemplateStringsArray, ...values: unknown[]) {
-  const tokens: string[] = []
-  strings.forEach((chunk, i) => {
-    for (const t of chunk.split(/\s+/)) if (t) tokens.push(t)
-    if (i < values.length && values[i] != null) tokens.push(String(values[i]))
-  })
-  const run = new Promise<void>((resolve, reject) => {
-    const proc = spawn(tokens[0], tokens.slice(1), { stdio: "ignore" })
-    proc.on("error", reject)
-    proc.on("close", (code) =>
-      code === 0 ? resolve() : reject(new Error(`${tokens[0]} exited with ${code}`)),
-    )
-  })
-  run.catch(() => {})
-  return {
-    quiet: () => run,
-    then: run.then.bind(run),
-    catch: run.catch.bind(run),
-    finally: run.finally.bind(run),
-  }
-}
-
 function readProviderKey(providerID: string): string | null {
   try {
     for (const dir of opencodeDataDirs()) {
@@ -370,7 +346,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
   autoUpdate({
     pkgName: PKG_NAME,
     client,
-    $: $ ?? shellFallback,
+    $,
     importMeta: import.meta,
   })
 
