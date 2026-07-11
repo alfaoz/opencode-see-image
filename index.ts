@@ -185,7 +185,7 @@ async function seeImageViaSDK(
               ],
               tools: {},
               system:
-                "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
+                "You are a vision assistant. Describe the image accurately and concisely. Answer with text only. If the image shows a UI, screen, diagram, layout, or any structured visual interface, include an ASCII diagram representing the spatial arrangement of elements, text, and components.",
             },
             signal: controller.signal,
           })
@@ -388,7 +388,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       const prompt =
         args.question && args.question.trim().length > 0
           ? args.question
-          : "Describe this image in detail. If it is a screenshot, describe the UI, text content, and layout precisely. This description will be used by another model to answer the user, so be thorough and accurate."
+          : "Describe this image in detail. If it is a screenshot, describe the UI, text content, and layout precisely. This description will be used by another model to answer the user, so be thorough and accurate. If the image shows a UI, screen, diagram, layout, or any structured visual interface, include an ASCII diagram representing the spatial arrangement of elements, text, and components."
 
       let result: { text: string; model: string; provider: string }
 
