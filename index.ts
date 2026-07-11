@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { autoUpdate } from "opencode-plugin-update-kit"
+import { autoUpdate, opencodeSpawnSpec } from "opencode-plugin-update-kit"
 import path from "path"
 import os from "os"
 import fs from "fs"
@@ -82,21 +82,23 @@ async function seeImageViaSDK(
     return await new Promise<string | null>((resolve) => {
       let out = ""
       let settled = false
-      const proc = spawn(
-        "opencode",
-        [
-          "run",
-          "-f",
-          filePath,
-          "-m",
-          `opencode/${modelID}`,
-          userPrompt,
-          "--format",
-          "json",
-          "--dangerously-skip-permissions",
-        ],
-        { stdio: ["ignore", "pipe", "ignore"] },
-      )
+      // opencodeSpawnSpec handles Windows, where the CLI is an .exe or npm
+      // .cmd shim that a bare spawn("opencode") cannot start.
+      const spec = opencodeSpawnSpec("opencode", [
+        "run",
+        "-f",
+        filePath,
+        "-m",
+        `opencode/${modelID}`,
+        userPrompt,
+        "--format",
+        "json",
+        "--dangerously-skip-permissions",
+      ])
+      const proc = spawn(spec.cmd, spec.args, {
+        stdio: ["ignore", "pipe", "ignore"],
+        ...spec.options,
+      })
       const timer = setTimeout(() => proc.kill(), TIMEOUT)
       const onAbort = () => proc.kill()
       abort?.addEventListener("abort", onAbort)
