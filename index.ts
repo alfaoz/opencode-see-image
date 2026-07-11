@@ -185,7 +185,7 @@ async function seeImageViaSDK(
               ],
               tools: {},
               system:
-                "You are a vision assistant. Describe the image accurately and concisely. Answer with text only. If the image shows a UI, screen, diagram, layout, or any structured visual interface, include an ASCII diagram representing the spatial arrangement of elements, text, and components.",
+                "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
             },
             signal: controller.signal,
           })
@@ -371,9 +371,10 @@ const SeeImagePlugin: Plugin = async (ctx) => {
             '- An error or stack trace screenshot: "Quote the exact error message and stack trace, then state the likely cause."',
             '- Reproducing a UI as code: "Describe the layout, components, text, colors, and spacing precisely enough to rebuild this UI in code."',
             '- A technical diagram/architecture: "Explain this diagram: list each component and the relationships and data/flow direction between them."',
+            '- A UI/screen where positions matter (alignment bugs, "where is X", overlapping or misplaced elements): "Describe the layout and include a labeled ASCII diagram of the spatial arrangement of elements."',
             '- A chart/graph/dashboard: "Read this visualization: axes, series, key values, and the main takeaway."',
             '- Comparing against an expected design: "Describe this UI in detail so it can be diffed against an expected layout (note any visible defects or misalignment)."',
-            "Otherwise pass the user's own specific question verbatim.",
+            'Otherwise pass the user\'s own specific question verbatim. If the question concerns a UI/screen and spatial arrangement matters to answering it, append: "Also include a labeled ASCII diagram of the layout."',
           ].join("\n"),
         ),
     },
@@ -388,7 +389,7 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       const prompt =
         args.question && args.question.trim().length > 0
           ? args.question
-          : "Describe this image in detail. If it is a screenshot, describe the UI, text content, and layout precisely. This description will be used by another model to answer the user, so be thorough and accurate. If the image shows a UI, screen, diagram, layout, or any structured visual interface, include an ASCII diagram representing the spatial arrangement of elements, text, and components."
+          : "Describe this image in detail. If it is a screenshot, describe the UI, text content, and layout precisely. This description will be used by another model to answer the user, so be thorough and accurate."
 
       let result: { text: string; model: string; provider: string }
 
