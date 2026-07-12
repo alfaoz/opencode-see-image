@@ -4,6 +4,8 @@ give non-vision opencode models the ability to see images and screenshots by rou
 
 when a user attaches a screenshot to a text-only model, opencode rejects it with an error. This plugin intercepts that flow by registering a `see_image` tool that sends the image to a vision model and returns a textual description the primary model can reason about.
 
+when the active model is already vision-capable (its `capabilities.input.image` is true), the plugin stays out of the way: the see_image instructions are not injected, and a stray `see_image` call returns a harmless "you already saw this natively" note instead of an error.
+
 ## install
 
 **one command (recommended):**

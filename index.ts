@@ -5,7 +5,12 @@ import os from "os"
 import fs from "fs"
 import { spawn } from "node:child_process"
 import type { Plugin } from "@opencode-ai/plugin"
-import { EXT_MEDIA, opencodeDataDirs, resolveImage } from "./lib.ts"
+import {
+  EXT_MEDIA,
+  modelSupportsVision,
+  opencodeDataDirs,
+  resolveImage,
+} from "./lib.ts"
 
 const ENDPOINT =
   process.env.SEE_IMAGE_ENDPOINT ||
@@ -352,9 +357,20 @@ const SeeImagePlugin: Plugin = async (ctx) => {
     importMeta: import.meta,
   })
 
+  // Vision capability of the model most recently used per session. Populated
+  // by the chat hooks below (which always run before the model can call any
+  // tool), consulted in execute() to fail soft when a vision-capable model
+  // calls see_image anyway.
+  const sessionVision = new Map<string, boolean>()
+  const rememberVision = (sessionID: string | undefined, model: unknown) => {
+    if (!sessionID) return
+    if (sessionVision.size > 500) sessionVision.clear()
+    sessionVision.set(sessionID, modelSupportsVision(model))
+  }
+
   const seeImageTool = tool({
     description:
-      'See an image/screenshot that the current model cannot view. Use when the user attaches an image and you get a "this model does not support image input" / "Cannot read" error, when the message contains an image placeholder like [Image #1], or when a screenshot/image is referenced ("see this", "can you see", .png/.jpg). Routes the image to a vision-capable model and returns a detailed textual description you can reason about as if you saw it. Pass filePath as an absolute path or bare filename, or omit it to use the most recently attached image in this conversation.',
+      'See an image/screenshot that the current model cannot view. Use when the user attaches an image and you get a "this model does not support image input" / "Cannot read" error, when the message contains an image placeholder like [Image #1], or when a screenshot/image is referenced ("see this", "can you see", .png/.jpg). Routes the image to a vision-capable model and returns a detailed textual description you can reason about as if you saw it. Pass filePath as an absolute path or bare filename, or omit it to use the most recently attached image in this conversation. Do NOT call this if you can already view images natively — you have already seen any attached image directly.',
     args: {
       filePath: tool.schema
         .string()
@@ -380,12 +396,32 @@ const SeeImagePlugin: Plugin = async (ctx) => {
         ),
     },
     async execute(args, context) {
-      const resolved = await resolveImage(
-        args.filePath || "",
-        context.directory,
-        context.sessionID,
-        client,
-      )
+      let resolved
+      try {
+        resolved = await resolveImage(
+          args.filePath || "",
+          context.directory,
+          context.sessionID,
+          client,
+        )
+      } catch (e) {
+        // Vision-capable models receive attachments natively, which consumes
+        // the image before we can find it — the model already saw it, so a
+        // hard error here is pure noise (issue #3). Fail soft instead.
+        if (sessionVision.get(context.sessionID)) {
+          context.metadata({
+            title: "see_image: not needed (model has native vision)",
+            metadata: { skipped: true, reason: "model supports image input" },
+          })
+          return (
+            "No bridge needed: the current model supports image input natively, " +
+            "so any attached image was already delivered to it directly. Answer " +
+            "from the image you have already seen — do not call see_image again " +
+            "for this attachment."
+          )
+        }
+        throw e
+      }
 
       const prompt =
         args.question && args.question.trim().length > 0
@@ -443,7 +479,18 @@ const SeeImagePlugin: Plugin = async (ctx) => {
     tool: {
       see_image: seeImageTool,
     },
-    "experimental.chat.system.transform": async (_input, output) => {
+    // chat.params fires on every request and always carries the sessionID,
+    // so it keeps sessionVision fresh even when system.transform's optional
+    // sessionID is absent (and when the user switches models mid-session).
+    "chat.params": async (input, _output) => {
+      rememberVision(input.sessionID, input.model)
+    },
+    "experimental.chat.system.transform": async (input, output) => {
+      rememberVision(input.sessionID, input.model)
+      // Vision-capable models see attachments natively — injecting the
+      // see_image instructions there only provokes pointless tool calls
+      // that then fail cosmetically (issue #3).
+      if (modelSupportsVision(input.model)) return
       output.system.push(SYSTEM_INSTRUCTIONS)
     },
   }

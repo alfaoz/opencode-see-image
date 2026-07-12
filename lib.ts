@@ -93,6 +93,28 @@ async function openDb(dbPath: string): Promise<DbHandle | null> {
   return null
 }
 
+// ── model capability detection ──────────────────────────────────────
+
+// Whether the active model can view images natively. Vision-capable models
+// receive attachments directly, so the see_image bridge is unnecessary there
+// (and the image parts get consumed before the tool could find them).
+// The model shape varies across opencode versions, so probe newest-first:
+//   - capabilities.input.image  (current Model type)
+//   - modalities.input          (models.dev style: ["text", "image"])
+//   - capabilities.attachment / attachment  (older shapes; attachment support
+//     has always meant image input in opencode)
+export function modelSupportsVision(model: any): boolean {
+  if (!model) return false
+  const input = model.capabilities?.input
+  if (input && typeof input.image === "boolean") return input.image
+  const modalities = model.modalities?.input
+  if (Array.isArray(modalities)) return modalities.includes("image")
+  if (typeof model.capabilities?.attachment === "boolean")
+    return model.capabilities.attachment
+  if (typeof model.attachment === "boolean") return model.attachment
+  return false
+}
+
 // ── image part matching ─────────────────────────────────────────────
 
 function isImagePart(p: any): p is ImagePart {
