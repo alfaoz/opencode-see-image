@@ -12,16 +12,49 @@ import {
   resolveImage,
 } from "./lib.ts"
 
-const ENDPOINT =
-  process.env.SEE_IMAGE_ENDPOINT ||
-  "https://opencode.ai/zen/go/v1/messages"
-const MODEL = process.env.SEE_IMAGE_MODEL || "minimax-m3"
-const PROVIDER_ID = process.env.SEE_IMAGE_PROVIDER || "opencode-go"
-const TIMEOUT = parseInt(process.env.SEE_IMAGE_TIMEOUT || "30000", 10)
-const API_VERSION = process.env.SEE_IMAGE_API_VERSION || "2023-06-01"
-const USER_AGENT =
-  process.env.SEE_IMAGE_USER_AGENT ||
+// Plugin options (config tuple form: ["opencode-see-image", { ... }]).
+// Each field falls back to the corresponding SEE_IMAGE_* env var, then to a
+// built-in default, so existing env-based setups keep working unchanged.
+export type SeeImageOptions = {
+  provider?: string
+  model?: string
+  endpoint?: string
+  apiKey?: string
+  timeout?: number
+  apiVersion?: string
+  userAgent?: string
+}
+
+type SeeImageConfig = {
+  provider: string
+  model: string
+  endpoint: string
+  apiKey?: string
+  timeout: number
+  apiVersion: string
+  userAgent: string
+}
+
+const DEFAULT_ENDPOINT = "https://opencode.ai/zen/go/v1/messages"
+const DEFAULT_MODEL = "minimax-m3"
+const DEFAULT_PROVIDER = "opencode-go"
+const DEFAULT_TIMEOUT = 30000
+const DEFAULT_API_VERSION = "2023-06-01"
+const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+
+function resolveConfig(options: SeeImageOptions = {}): SeeImageConfig {
+  const envTimeout = parseInt(process.env.SEE_IMAGE_TIMEOUT || "", 10)
+  return {
+    provider: options.provider || process.env.SEE_IMAGE_PROVIDER || DEFAULT_PROVIDER,
+    model: options.model || process.env.SEE_IMAGE_MODEL || DEFAULT_MODEL,
+    endpoint: options.endpoint || process.env.SEE_IMAGE_ENDPOINT || DEFAULT_ENDPOINT,
+    apiKey: options.apiKey || process.env.SEE_IMAGE_API_KEY,
+    timeout: options.timeout ?? (Number.isFinite(envTimeout) ? envTimeout : DEFAULT_TIMEOUT),
+    apiVersion: options.apiVersion || process.env.SEE_IMAGE_API_VERSION || DEFAULT_API_VERSION,
+    userAgent: options.userAgent || process.env.SEE_IMAGE_USER_AGENT || DEFAULT_USER_AGENT,
+  }
+}
 
 // Animated heartbeat shown in the tool title while we wait, so the user can
 // see the call is alive. Purely cosmetic — never touches the vision call.
@@ -54,6 +87,7 @@ async function seeImageViaSDK(
   dataUrl: string,
   mediaType: string,
   prompt: string,
+  cfg: SeeImageConfig,
   abort?: AbortSignal,
 ): Promise<{ text: string; model: string; provider: string }> {
   const errors: string[] = []
@@ -104,7 +138,7 @@ async function seeImageViaSDK(
         stdio: ["ignore", "pipe", "ignore"],
         ...spec.options,
       })
-      const timer = setTimeout(() => proc.kill(), TIMEOUT)
+      const timer = setTimeout(() => proc.kill(), cfg.timeout)
       const onAbort = () => proc.kill()
       abort?.addEventListener("abort", onAbort)
       const finish = (value: string | null) => {
@@ -139,6 +173,10 @@ async function seeImageViaSDK(
     if (envProvider && envModel) {
       candidates.push({ providerID: envProvider, modelID: envModel })
     }
+    // Config-provided route (highest priority, from plugin options).
+    if (cfg.provider && cfg.model) {
+      candidates.unshift({ providerID: cfg.provider, modelID: cfg.model })
+    }
     // Only try the paid opencode-go model if the user actually has that sub
     // connected. Free/Zen-only users otherwise hit a fatal
     // ProviderModelNotFoundError before ever reaching the free fallback below.
@@ -165,8 +203,8 @@ async function seeImageViaSDK(
           client.session.create({ body: {} }),
           new Promise<never>((_, reject) =>
             setTimeout(
-              () => reject(new Error(`session.create timed out after ${TIMEOUT}ms`)),
-              TIMEOUT,
+              () => reject(new Error(`session.create timed out after ${cfg.timeout}ms`)),
+              cfg.timeout,
             ),
           ),
         ])
@@ -179,7 +217,7 @@ async function seeImageViaSDK(
         const controller = new AbortController()
         const onAbort = () => controller.abort()
         abort?.addEventListener("abort", onAbort)
-        const timer = setTimeout(() => controller.abort(), TIMEOUT)
+        const timer = setTimeout(() => controller.abort(), cfg.timeout)
         let res
         try {
           res = await client.session.prompt({
@@ -227,13 +265,12 @@ async function seeImageViaSDK(
 
     if (!result) {
       const apiKey =
-        process.env.SEE_IMAGE_API_KEY ||
-        (process.env.SEE_IMAGE_PROVIDER &&
-          readProviderKey(process.env.SEE_IMAGE_PROVIDER)) ||
+        cfg.apiKey ||
+        (cfg.provider && readProviderKey(cfg.provider)) ||
         readProviderKey("opencode-go")
       if (apiKey) {
         try {
-          result = await seeImageViaHTTP(b64, mediaType, prompt, abort, apiKey)
+          result = await seeImageViaHTTP(b64, mediaType, prompt, cfg, abort, apiKey)
         } catch (e: any) {
           errors.push(`http-fallback: ${e?.message ?? e}`)
         }
@@ -260,12 +297,13 @@ async function seeImageViaHTTP(
   b64: string,
   mediaType: string,
   prompt: string,
+  cfg: SeeImageConfig,
   abort?: AbortSignal,
   keyOverride?: string,
 ): Promise<{ text: string; model: string; provider: string }> {
-  const key = keyOverride || process.env.SEE_IMAGE_API_KEY!
+  const key = keyOverride || cfg.apiKey!
   const body = {
-    model: MODEL,
+    model: cfg.model,
     max_tokens: 2048,
     messages: [
       {
@@ -281,13 +319,13 @@ async function seeImageViaHTTP(
     ],
   }
 
-  const res = await fetch(ENDPOINT, {
+  const res = await fetch(cfg.endpoint, {
     method: "POST",
     headers: {
       "x-api-key": key,
-      "anthropic-version": API_VERSION,
+      "anthropic-version": cfg.apiVersion,
       "content-type": "application/json",
-      "user-agent": USER_AGENT,
+      "user-agent": cfg.userAgent,
     },
     body: JSON.stringify(body),
     signal: abort,
@@ -296,7 +334,7 @@ async function seeImageViaHTTP(
   if (!res.ok) {
     const errText = await res.text()
     throw new Error(
-      `see_image: HTTP vision call to "${MODEL}" failed: HTTP ${res.status}, ${errText.slice(0, 300)}`,
+      `see_image: HTTP vision call to "${cfg.model}" failed: HTTP ${res.status}, ${errText.slice(0, 300)}`,
     )
   }
 
@@ -309,11 +347,11 @@ async function seeImageViaHTTP(
 
   if (!text) {
     throw new Error(
-      `see_image: model "${MODEL}" returned no text. Response: ${JSON.stringify(data).slice(0, 300)}`,
+      `see_image: model "${cfg.model}" returned no text. Response: ${JSON.stringify(data).slice(0, 300)}`,
     )
   }
 
-  return { text, model: MODEL, provider: PROVIDER_ID }
+  return { text, model: cfg.model, provider: cfg.provider }
 }
 
 const SYSTEM_INSTRUCTIONS = `# See Image (vision bridge), opencode-see-image plugin
@@ -347,8 +385,9 @@ Call \`see_image\` immediately in ALL these cases — do not inform the user, do
 
 const PKG_NAME = "opencode-see-image"
 
-const SeeImagePlugin: Plugin = async (ctx) => {
+const SeeImagePlugin: Plugin = async (ctx, options) => {
   const { client, $ } = ctx
+  const cfg = resolveConfig(options as SeeImageOptions)
 
   autoUpdate({
     pkgName: PKG_NAME,
@@ -389,9 +428,10 @@ const SeeImagePlugin: Plugin = async (ctx) => {
             '- An error or stack trace screenshot: "Quote the exact error message and stack trace, then state the likely cause."',
             '- Reproducing a UI as code: "Describe the layout, components, text, colors, and spacing precisely enough to rebuild this UI in code."',
             '- A technical diagram/architecture: "Explain this diagram: list each component and the relationships and data/flow direction between them."',
+            '- A UI/screen where positions matter (alignment bugs, "where is X", overlapping or misplaced elements): "Describe the layout and include a labeled ASCII diagram of the spatial arrangement of elements."',
             '- A chart/graph/dashboard: "Read this visualization: axes, series, key values, and the main takeaway."',
             '- Comparing against an expected design: "Describe this UI in detail so it can be diffed against an expected layout (note any visible defects or misalignment)."',
-            "Otherwise pass the user's own specific question verbatim.",
+            'Otherwise pass the user\'s own specific question verbatim. If the question concerns a UI/screen and spatial arrangement matters to answering it, append: "Also include a labeled ASCII diagram of the layout."',
           ].join("\n"),
         ),
     },
@@ -446,15 +486,16 @@ const SeeImagePlugin: Plugin = async (ctx) => {
       const heartbeat = setInterval(render, 500)
 
       try {
-        if (process.env.SEE_IMAGE_API_KEY) {
+        if (cfg.apiKey) {
           const b64 = resolved.dataUrl.split(",")[1] || ""
-          result = await seeImageViaHTTP(b64, resolved.mediaType, prompt, context.abort)
+          result = await seeImageViaHTTP(b64, resolved.mediaType, prompt, cfg, context.abort)
         } else {
           result = await seeImageViaSDK(
             client,
             resolved.dataUrl,
             resolved.mediaType,
             prompt,
+            cfg,
             context.abort,
           )
         }

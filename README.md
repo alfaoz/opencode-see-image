@@ -4,7 +4,7 @@ give non-vision opencode models the ability to see images and screenshots by rou
 
 when a user attaches a screenshot to a text-only model, opencode rejects it with an error. This plugin intercepts that flow by registering a `see_image` tool that sends the image to a vision model and returns a textual description the primary model can reason about.
 
-when the active model is already vision-capable (its `capabilities.input.image` is true), the plugin stays out of the way: the see_image instructions are not injected, and a stray `see_image` call returns a harmless "you already saw this natively" note instead of an error.
+when the active model is already vision-capable (its `capabilities.input.image` is true), the plugin stays out of the way: the see_image instructions are not injected, and a stray `see_image` call returns a harmless "you already saw this natively" note instead of an error. beware that this might lead to issues while switching models mid session, so a clean session might fix most of your problems (if any).
 
 ## install
 
@@ -101,6 +101,43 @@ the plugin registers a `see_image` tool with two arguments:
 your model calls this tool automatically when you attach a screenshot, you don't need to do anything special. The `question` arg is optional; the model uses it when you ask something specific about the image.
 
 ## configuration
+
+you can configure the vision route **two ways**: via plugin options in your opencode config (recommended), or via `SEE_IMAGE_*` env vars. The plugin uses opencode's SDK client by default (handles auth automatically). Set `SEE_IMAGE_API_KEY` to bypass the SDK and call an HTTP endpoint directly.
+
+### via plugin options (config)
+
+Set the vision route in your opencode config (`~/.config/opencode/opencode.json` or `opencode.json` in a project) using the **tuple form** of the `plugin` array entry:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    [
+      "opencode-see-image",
+      {
+        "provider": "egon-proxy",
+        "model": "qwen3.6-35b-a3b:latest"
+      }
+    ]
+  ]
+}
+```
+
+Supported option keys (all optional):
+
+| option | env var fallback | default | description |
+|---|---|---|---|
+| `provider` | `SEE_IMAGE_PROVIDER` | `opencode-go` | Provider ID for SDK routing |
+| `model` | `SEE_IMAGE_MODEL` | `minimax-m3` | Vision model ID |
+| `endpoint` | `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used with `apiKey`) |
+| `apiKey` | `SEE_IMAGE_API_KEY` | _(uses SDK)_ | Bypass SDK, call HTTP endpoint directly |
+| `timeout` | `SEE_IMAGE_TIMEOUT` | `30000` | Per-candidate timeout in ms. Prevents hanging on slow models. |
+| `apiVersion` | `SEE_IMAGE_API_VERSION` | `2023-06-01` | `anthropic-version` header (HTTP mode only) |
+| `userAgent` | `SEE_IMAGE_USER_AGENT` | _(Chrome UA)_ | User-Agent header (HTTP mode only) |
+
+**precedence:** per field, resolution is `plugin option → SEE_IMAGE_* env var → built-in default`. Config options take precedence over env vars; env vars remain the fallback when an option is unset. Existing env-var-only setups are unchanged.
+
+### via env vars
 
 all settings are env-var overrides. The plugin uses opencode's SDK client by default (handles auth automatically). Set `SEE_IMAGE_API_KEY` to bypass the SDK and call an HTTP endpoint directly.
 
