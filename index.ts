@@ -28,6 +28,8 @@ export type SeeImageOptions = {
 type SeeImageConfig = {
   provider: string
   model: string
+  // provider+model were user-set (options or env), not defaulted
+  routeConfigured: boolean
   endpoint: string
   apiKey?: string
   timeout: number
@@ -44,13 +46,20 @@ const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 
 function resolveConfig(options: SeeImageOptions = {}): SeeImageConfig {
-  const envTimeout = parseInt(process.env.SEE_IMAGE_TIMEOUT || "", 10)
+  // config gives numbers, env gives strings; reject garbage either way
+  const ms = (v: unknown): number | undefined => {
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0 ? n : undefined
+  }
+  const provider = options.provider || process.env.SEE_IMAGE_PROVIDER
+  const model = options.model || process.env.SEE_IMAGE_MODEL
   return {
-    provider: options.provider || process.env.SEE_IMAGE_PROVIDER || DEFAULT_PROVIDER,
-    model: options.model || process.env.SEE_IMAGE_MODEL || DEFAULT_MODEL,
+    provider: provider || DEFAULT_PROVIDER,
+    model: model || DEFAULT_MODEL,
+    routeConfigured: Boolean(provider && model),
     endpoint: options.endpoint || process.env.SEE_IMAGE_ENDPOINT || DEFAULT_ENDPOINT,
     apiKey: options.apiKey || process.env.SEE_IMAGE_API_KEY,
-    timeout: options.timeout ?? (Number.isFinite(envTimeout) ? envTimeout : DEFAULT_TIMEOUT),
+    timeout: ms(options.timeout) ?? ms(process.env.SEE_IMAGE_TIMEOUT) ?? DEFAULT_TIMEOUT,
     apiVersion: options.apiVersion || process.env.SEE_IMAGE_API_VERSION || DEFAULT_API_VERSION,
     userAgent: options.userAgent || process.env.SEE_IMAGE_USER_AGENT || DEFAULT_USER_AGENT,
   }
@@ -168,19 +177,16 @@ async function seeImageViaSDK(
 
   try {
     const candidates: Array<{ providerID: string; modelID: string }> = []
-    const envProvider = process.env.SEE_IMAGE_PROVIDER
-    const envModel = process.env.SEE_IMAGE_MODEL
-    if (envProvider && envModel) {
-      candidates.push({ providerID: envProvider, modelID: envModel })
-    }
-    // Config-provided route (highest priority, from plugin options).
-    if (cfg.provider && cfg.model) {
-      candidates.unshift({ providerID: cfg.provider, modelID: cfg.model })
+    if (cfg.routeConfigured) {
+      candidates.push({ providerID: cfg.provider, modelID: cfg.model })
     }
     // Only try the paid opencode-go model if the user actually has that sub
     // connected. Free/Zen-only users otherwise hit a fatal
     // ProviderModelNotFoundError before ever reaching the free fallback below.
-    if (envProvider !== "opencode-go" && readProviderKey("opencode-go")) {
+    if (
+      !(cfg.routeConfigured && cfg.provider === "opencode-go") &&
+      readProviderKey("opencode-go")
+    ) {
       candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
     }
     candidates.push({ providerID: "opencode", modelID: "mimo-v2.5-free" })

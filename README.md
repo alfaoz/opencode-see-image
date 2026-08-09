@@ -137,9 +137,11 @@ Supported option keys (all optional):
 
 **precedence:** per field, resolution is `plugin option → SEE_IMAGE_* env var → built-in default`. Config options take precedence over env vars; env vars remain the fallback when an option is unset. Existing env-var-only setups are unchanged.
 
+**note on secrets:** a project-level `opencode.json` usually ends up in git — keep `apiKey` out of it and use the `SEE_IMAGE_API_KEY` env var instead.
+
 ### via env vars
 
-all settings are env-var overrides. The plugin uses opencode's SDK client by default (handles auth automatically). Set `SEE_IMAGE_API_KEY` to bypass the SDK and call an HTTP endpoint directly.
+same settings as environment variables:
 
 | env var | default | description |
 |---|---|---|
