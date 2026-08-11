@@ -76,6 +76,43 @@ function heartbeatBar(tick: number, width = 12): string {
   return s
 }
 
+// Deleting the helper session the moment prompt() resolves races opencode's
+// event projection — late part writes then hit a deleted parent row and the
+// user sees a failed-query DB error (issue #5). Defer deletion until the
+// session goes idle plus a settle delay, with a slow timer as backstop for
+// the case where the idle event slipped past before cleanup was scheduled.
+const CLEANUP_SETTLE_MS = 2_000
+const CLEANUP_FALLBACK_MS = 60_000
+const pendingCleanup = new Map<string, ReturnType<typeof setTimeout>>()
+
+function deleteSessionNow(client: any, sessionID: string) {
+  const timer = pendingCleanup.get(sessionID)
+  if (timer) clearTimeout(timer)
+  pendingCleanup.delete(sessionID)
+  client.session.delete({ path: { id: sessionID } }).catch(() => {})
+}
+
+function scheduleSessionCleanup(client: any, sessionID: string) {
+  const timer = setTimeout(
+    () => deleteSessionNow(client, sessionID),
+    CLEANUP_FALLBACK_MS,
+  )
+  timer.unref?.()
+  pendingCleanup.set(sessionID, timer)
+}
+
+function onSessionIdle(client: any, sessionID: string) {
+  const timer = pendingCleanup.get(sessionID)
+  if (!timer) return
+  clearTimeout(timer)
+  const settle = setTimeout(
+    () => deleteSessionNow(client, sessionID),
+    CLEANUP_SETTLE_MS,
+  )
+  settle.unref?.()
+  pendingCleanup.set(sessionID, settle)
+}
+
 function readProviderKey(providerID: string): string | null {
   try {
     for (const dir of opencodeDataDirs()) {
@@ -261,11 +298,7 @@ async function seeImageViaSDK(
       } catch (e: any) {
         errors.push(`${providerID}/${modelID}: ${e?.message ?? e}`)
       } finally {
-        if (sessionID) {
-          await client.session
-            .delete({ path: { id: sessionID } })
-            .catch(() => {})
-        }
+        if (sessionID) scheduleSessionCleanup(client, sessionID)
       }
     }
 
@@ -525,6 +558,11 @@ const SeeImagePlugin: Plugin = async (ctx, options) => {
   return {
     tool: {
       see_image: seeImageTool,
+    },
+    event: async ({ event }) => {
+      if (event.type === "session.idle") {
+        onSessionIdle(client, (event.properties as any)?.sessionID)
+      }
     },
     // chat.params fires on every request and always carries the sessionID,
     // so it keeps sessionVision fresh even when system.transform's optional
