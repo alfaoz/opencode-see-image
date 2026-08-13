@@ -89,6 +89,16 @@ primary model answers using the description
 
 if everything misses, the error message lists the images actually attached to the session so the model can retry with a correct filename.
 
+## security: the vision model gets no tools
+
+the vision call handles attacker-influenceable content (the image itself, plus the question), so the helper model is locked out of the agent toolset on every route:
+
+- **SDK route** (default): the helper session is created with a wildcard deny (`"*": false` plus explicit per-tool denies), which opencode converts to session permission rules that strip every tool — bash, edit, webfetch, MCP tools, all of it — from the request before the vision model ever sees it.
+- **CLI fallback** (free Zen models): the spawned `opencode run` gets a deny-all `OPENCODE_PERMISSION` config and runs **without** `--dangerously-skip-permissions`, so no tool is offered and nothing can be auto-approved.
+- **HTTP route** (`apiKey` set): a plain Anthropic-Messages API call with no `tools` field at all.
+
+versions before 1.3.1 passed `tools: {}` on the SDK route, which opencode treats as "no overrides" — the vision model received the full toolset and could actually execute commands ([#6](https://github.com/alfaoz/opencode-see-image/issues/6)). update if you're on an older version.
+
 ## the `see_image` tool
 
 the plugin registers a `see_image` tool with two arguments:

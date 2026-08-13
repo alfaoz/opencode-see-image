@@ -42,6 +42,58 @@ const DEFAULT_MODEL = "minimax-m3"
 const DEFAULT_PROVIDER = "opencode-go"
 const DEFAULT_TIMEOUT = 30000
 const DEFAULT_API_VERSION = "2023-06-01"
+
+// The vision helper must run tool-less (issue #6): it processes
+// attacker-influenceable content (the image + question), so it must never
+// hold bash/edit/webfetch/etc. In session.prompt, each `tools` entry becomes
+// a session permission rule evaluated with wildcard matching, so "*": false
+// strips every tool from the request and denies any stragglers — while the
+// old `tools: {}` meant "no overrides" and silently left the FULL default
+// toolset enabled. The named entries are a second, independent layer: the
+// per-message tools record is also consulted with exact-name matching when
+// the request is assembled.
+const SDK_NO_TOOLS: Record<string, boolean> = {
+  "*": false,
+  bash: false,
+  edit: false,
+  write: false,
+  patch: false,
+  apply_patch: false,
+  read: false,
+  glob: false,
+  grep: false,
+  list: false,
+  webfetch: false,
+  websearch: false,
+  task: false,
+  skill: false,
+  todowrite: false,
+  todoread: false,
+}
+
+// Same lockdown for the CLI fallback, expressed as config permissions.
+// OPENCODE_PERMISSION merges over the user's config permission block: "*"
+// deny catches every tool (rules are wildcard-matched, last match wins), and
+// the named keys overwrite any explicit per-tool "allow" a user may have set
+// globally. Keys are permission names, not tool ids — write/patch fold into
+// "edit". Supported by opencode across the whole 1.x line.
+const CLI_NO_TOOLS_PERMISSION = JSON.stringify({
+  "*": "deny",
+  bash: "deny",
+  edit: "deny",
+  read: "deny",
+  glob: "deny",
+  grep: "deny",
+  list: "deny",
+  webfetch: "deny",
+  websearch: "deny",
+  task: "deny",
+  skill: "deny",
+  todowrite: "deny",
+  external_directory: "deny",
+  lsp: "deny",
+  question: "deny",
+})
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 
@@ -178,11 +230,15 @@ async function seeImageViaSDK(
         userPrompt,
         "--format",
         "json",
-        "--dangerously-skip-permissions",
       ])
+      // No --dangerously-skip-permissions (issue #6): that auto-approved any
+      // tool the vision model reached for. Instead the child gets a deny-all
+      // permission config, so no tool is ever offered or approved; the -f
+      // image is ingested client-side by the CLI and needs no read tool.
       const proc = spawn(spec.cmd, spec.args, {
         stdio: ["ignore", "pipe", "ignore"],
         ...spec.options,
+        env: { ...process.env, OPENCODE_PERMISSION: CLI_NO_TOOLS_PERMISSION },
       })
       const timer = setTimeout(() => proc.kill(), cfg.timeout)
       const onAbort = () => proc.kill()
@@ -271,9 +327,9 @@ async function seeImageViaSDK(
                 { type: "file", mime: mediaType, url: dataUrl },
                 { type: "text", text: prompt },
               ],
-              tools: {},
+              tools: SDK_NO_TOOLS,
               system:
-                "You are a vision assistant. Describe the image accurately and concisely. Answer with text only.",
+                "You are a vision assistant with no tools. Describe the image accurately and concisely. Answer with text only; never attempt to run commands or call tools.",
             },
             signal: controller.signal,
           })
