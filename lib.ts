@@ -99,13 +99,15 @@ async function openDb(dbPath: string): Promise<DbHandle | null> {
 // receive attachments directly, so the see_image bridge is unnecessary there
 // (and the image parts get consumed before the tool could find them).
 // The model shape varies across opencode versions, so probe newest-first:
-//   - capabilities.input.image  (current Model type)
-//   - modalities.input          (models.dev style: ["text", "image"])
+//   - capabilities.input         (v2 / models.dev style: ["text", "image"])
+//   - capabilities.input.image   (older v1 Model type)
+//   - modalities.input           (models.dev style: ["text", "image"])
 //   - capabilities.attachment / attachment  (older shapes; attachment support
 //     has always meant image input in opencode)
 export function modelSupportsVision(model: any): boolean {
   if (!model) return false
   const input = model.capabilities?.input
+  if (Array.isArray(input)) return input.includes("image")
   if (input && typeof input.image === "boolean") return input.image
   const modalities = model.modalities?.input
   if (Array.isArray(modalities)) return modalities.includes("image")
@@ -146,7 +148,7 @@ function wantsLatest(name: string): boolean {
 }
 
 // `parts` is chronological; prefer the most recent match.
-function pickImage(parts: ImagePart[], name: string): ImagePart | null {
+export function pickImage(parts: ImagePart[], name: string): ImagePart | null {
   if (wantsLatest(name)) {
     return parts.length ? parts[parts.length - 1] : null
   }
@@ -318,29 +320,51 @@ export function resolveFromFilesystem(
   }
 }
 
+// v2 stores attached images on the user message as `files` entries:
+//   { data: <base64>, mime: "image/png", source: { type: "inline" | "uri" }, name? }
+// Shape them like the v1 session part so the shared ladder can match them.
+export function imagePartsFromV2Messages(messages: any[]): ImagePart[] {
+  const parts: ImagePart[] = []
+  for (const message of messages ?? []) {
+    if (message?.type !== "user") continue
+    for (const file of message?.files ?? []) {
+      const mime = typeof file?.mime === "string" ? file.mime : ""
+      const data = typeof file?.data === "string" ? file.data : ""
+      if (!mime.startsWith("image/") || !data) continue
+      parts.push({ filename: file?.name, mime, url: `data:${mime};base64,${data}` })
+    }
+  }
+  return parts
+}
+
 // ── orchestrator ────────────────────────────────────────────────────
 //
 // Resolution ladder:
-//   1. current session via SDK — exact filename, then normalized, then
-//      (for empty/"clipboard"/"latest") the most recent image
+//   1. current session via the runtime's session API — exact filename, then
+//      normalized, then (for empty/"clipboard"/"latest") the most recent image
 //   2. same ladder against opencode.db directly
 //   3. named files only: any session in opencode.db
 //   4. named files only: filesystem search
 //   5. named files only: most recent image in the session anyway — the user
 //      attached *something*; describing it beats erroring out
-export async function resolveImage(
+//
+// Both the v1 and v2 adapters share this ladder; they differ only in how the
+// session's image parts are fetched (v1: client.session.messages, v2:
+// ctx.session.context), which is passed in as `getSessionParts`.
+async function resolveWithSessionParts(
+  getSessionParts: () => Promise<ImagePart[]>,
+  sessionSource: string,
   name: string,
   cwd: string,
   sessionID?: string,
-  client?: any,
 ): Promise<ResolvedImage> {
   const latestOnly = wantsLatest(name)
 
   let sessionParts: ImagePart[] = []
-  if (client && sessionID) {
-    sessionParts = await sessionImagePartsViaSDK(client, sessionID)
+  if (sessionID) {
+    sessionParts = await getSessionParts()
     const hit = pickImage(sessionParts, name)
-    if (hit) return toResolved(hit, "opencode-session")
+    if (hit) return toResolved(hit, sessionSource)
   }
 
   const dbParts = await imagePartsViaDb(sessionID)
@@ -363,7 +387,7 @@ export async function resolveImage(
   if (!latestOnly && sessionID) {
     const inSession = sessionParts.length ? sessionParts : dbParts
     const latest = pickImage(inSession, "")
-    if (latest) return toResolved(latest, "opencode-session-latest")
+    if (latest) return toResolved(latest, `${sessionSource}-latest`)
   }
 
   const known = [
@@ -380,5 +404,41 @@ export async function resolveImage(
             .map((f) => `"${f}"`)
             .join(", ")}. Call see_image again with one of those filenames.`
         : `No images found in this conversation. Ask the user to re-attach the image or provide an absolute file path.`),
+  )
+}
+
+// v1 (legacy) entrypoint: images come from the SDK client.
+export async function resolveImage(
+  name: string,
+  cwd: string,
+  sessionID?: string,
+  client?: any,
+): Promise<ResolvedImage> {
+  return resolveWithSessionParts(
+    () =>
+      client && sessionID
+        ? sessionImagePartsViaSDK(client, sessionID)
+        : Promise.resolve([]),
+    "opencode-session",
+    name,
+    cwd,
+    client && sessionID ? sessionID : undefined,
+  )
+}
+
+// v2 entrypoint: images come from ctx.session.context. `getContext` is passed
+// rather than the domain itself so this module keeps zero v2 imports.
+export async function resolveImageV2(
+  name: string,
+  cwd: string,
+  sessionID: string | undefined,
+  getContext: (sessionID: string) => Promise<any[]>,
+): Promise<ResolvedImage> {
+  return resolveWithSessionParts(
+    async () => (sessionID ? imagePartsFromV2Messages(await getContext(sessionID)) : []),
+    "opencode-session",
+    name,
+    cwd,
+    sessionID,
   )
 }

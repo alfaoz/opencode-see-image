@@ -37,6 +37,8 @@ it'll run `opencode plugin opencode-see-image --global` and tell you to restart.
 
 ## prerequisites
 
+the plugin supports **both OpenCode v1 (`opencode` 1.x) and v2 (`opencode2` 2.x)**. the same package loads under either runtime: it exports a single dual-shaped plugin object carrying both a v1 `server()` and a v2 `setup()`, and each runtime picks the member it understands.
+
 you need a connected vision-capable provider. The plugin auto-detects whichever you have connected, **either of these work**:
 
 ### free (OpenCode Zen)
@@ -97,7 +99,27 @@ the vision call handles attacker-influenceable content (the image itself, plus t
 - **cli fallback** (free Zen models): the spawned `opencode run` gets a deny-all `OPENCODE_PERMISSION` config and runs **without** `--dangerously-skip-permissions`, so no tool is offered and nothing can be auto-approved.
 - **http route** (`apiKey` set): a plain Anthropic-Messages API call with no `tools` field at all.
 
+on **v2** the helper session runs tool-less via the `context` hook (every entry in `event.tools` is removed before dispatch), with a session-scoped deny-all permission rule as a second layer.
+
 versions before 1.3.1 passed `tools: {}` on the SDK route, which opencode treats as "no overrides" — the vision model received the full toolset and could actually execute commands ([#6](https://github.com/alfaoz/opencode-see-image/issues/6)). *update if you're on an older version.*
+
+### v1 / v2 compatibility [ introduced in 1.4.0 ]
+
+opencode's two runtimes use incompatible plugin module shapes:
+
+| runtime | loader accepts | hook surface |
+|---|---|---|
+| v1 (`opencode` 1.x) | default export `{ id?, server }` | `tool`, `event`, `chat.params`, `experimental.chat.system.transform` |
+| v2 (`opencode2` 2.x) | default export `{ id, setup }` (or `{ id, effect }`) | `ctx.tool.transform`, `ctx.session.hook`, `ctx.permission.hook`, `ctx.catalog.model.list` |
+
+a plugin written for one shape fails to load on the other — v2 reports `must export a default definition with an id and an effect or setup function`, v1 reports `must default export an object with server()`. this package handles both from a single entrypoint:
+
+- `index.ts` exports **one** object with both `setup` (v2) and `server` (v1). v2's schema accepts `{ id, setup, … }` and ignores the extra `server` key; v1's detector finds `{ id, server }` and calls it. neither runtime sees a shape it rejects.
+- `v1.ts` holds the legacy adapter, `v2.ts` the modern one. they share `core.ts` (config resolution, the Anthropic-Messages HTTP call, the system prompt, the heartbeat) and `lib.ts` (image resolution), so the two paths cannot drift.
+- on v2, model vision capability comes from `ctx.catalog.model.list()` (the active model arrives as a bare `{ id, providerID }` ref), and the `see_image` instructions are injected through `ctx.session.hook("context", …)`.
+
+`index.ts` exports nothing but its default on purpose: the v1 loader calls every exported binding as if it were a plugin factory, so a stray helper export would crash the plugin at load time.
+
 
 ## the `see_image` tool
 
