@@ -8,17 +8,17 @@
 // server()"), which is why index.ts exports a single object carrying both
 // `server` (v1) and `setup` (v2): each runtime picks the member it knows.
 //
-// Deliberately absent compared to v1:
-//   - autoUpdate: the kit drives v1's `opencode plugin <pkg> --global`, which
-//     the v2 CLI doesn't have. v2 manages plugin versions itself.
-//   - the `opencode run` CLI fallback for free models: v2's `run` ignores
-//     OPENCODE_PERMISSION, so the child would get the user's full toolset
-//     (issue #6). Free models go through the tool-less helper session instead.
+// Deliberately absent compared to v1: the `opencode run` CLI fallback for
+// free models. v2's `run` ignores OPENCODE_PERMISSION, so the child would get
+// the user's full toolset (issue #6). Free models go through the tool-less
+// helper session instead.
 
+import { autoUpdate } from "opencode-plugin-update-kit"
 import { EXT_MEDIA, modelSupportsVision, resolveImageV2 } from "./lib.ts"
 import {
   DEFAULT_QUESTION,
   FILEPATH_DESCRIPTION,
+  PKG_NAME,
   QUESTION_DESCRIPTION,
   SYSTEM_INSTRUCTIONS,
   TOOL_DESCRIPTION,
@@ -54,6 +54,9 @@ function extractAssistantText(messages: any[]): string {
 export async function setupV2(ctx: any, options?: SeeImageOptions) {
   const cfg = resolveConfig(options)
   const cwd: string = ctx?.location?.directory ?? process.cwd()
+
+  // Best-effort and never awaited, so it can't hold up activation.
+  autoUpdate({ pkgName: PKG_NAME, importMeta: import.meta, runtime: "v2" }).catch(() => {})
 
   // Vision capability of the model most recently used per session, consulted
   // in execute() to fail soft when a vision-capable model calls see_image.

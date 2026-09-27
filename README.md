@@ -118,7 +118,7 @@ a plugin written for one shape fails to load on the other — v2 reports `must e
 - `v1.ts` holds the legacy adapter, `v2.ts` the modern one. they share `core.ts` (config resolution, the Anthropic-Messages HTTP call, the system prompt, the heartbeat) and `lib.ts` (image resolution), so the two paths cannot drift.
 - on v2, model vision capability comes from `ctx.model.list()` (the active model arrives as a bare `{ id, providerID }` ref), and the `see_image` instructions are injected through `ctx.session.hook("context", …)`. `see_image` is registered with `codemode: false`, so it's a direct tool like `read`/`bash` rather than hidden behind v2's `execute` wrapper.
 - v2 has no plugin API for deleting sessions, so each vision call leaves a small idle `see_image helper` session behind (v1 deletes them).
-- auto-update is v1-only: it drives v1's `opencode plugin … --global` installer. on v2, install with `opencode plugin add opencode-see-image` and update with `opencode plugin update opencode-see-image`.
+- auto-update works on both. on v1 it runs `opencode plugin … --global`; on v2 it moves the version pin in your config (v2 reloads the plugin live) or runs `opencode plugin update opencode-see-image` for an unpinned entry. to install on v2: `opencode plugin add opencode-see-image`.
 
 `index.ts` exports nothing but its default on purpose: the v1 loader calls every exported binding as if it were a plugin factory, so a stray helper export would crash the plugin at load time.
 
