@@ -422,7 +422,7 @@ export async function resolveImage(
     "opencode-session",
     name,
     cwd,
-    client && sessionID ? sessionID : undefined,
+    sessionID,
   )
 }
 
