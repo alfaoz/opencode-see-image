@@ -68,14 +68,16 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
   }
 
   // v2 hands hooks the active model as a bare `{ id, providerID }` ref, so
-  // capabilities come from ctx.model.list(), keyed like the ref (Model.Info.id,
-  // not modelID, which is the provider-side API id). Cached and refreshed on
-  // demand from the (async) context hook; no timer to clean up.
+  // capabilities must be looked up from the model catalog. The catalog moved
+  // across 2.x builds — `ctx.catalog.model` on the early betas (0.0.0-beta-*),
+  // `ctx.model` on 2.0.18+ — so probe for whichever the host exposes. Cached
+  // and refreshed on demand from the (async) context hook; no timer to clean up.
   let visionIndex = new Map<string, boolean>()
   let visionIndexAt = 0
   async function refreshVisionIndex() {
     try {
-      const list = await ctx.model.list()
+      const domain = (ctx as any).model ?? (ctx as any).catalog?.model
+      const list = await domain?.list()
       const next = new Map<string, boolean>()
       for (const model of list?.data ?? list ?? []) {
         if (!model?.id) continue
