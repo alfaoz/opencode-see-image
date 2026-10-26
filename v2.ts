@@ -26,6 +26,7 @@ import {
   readProviderKey,
   resolveConfig,
   seeImageViaHTTP,
+  visionCandidates,
   type SeeImageOptions,
   type VisionResult,
 } from "./core.ts"
@@ -132,19 +133,7 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
 
     let result: VisionResult | undefined
 
-    const candidates: Array<{ providerID: string; modelID: string }> = []
-    if (cfg.routeConfigured) {
-      candidates.push({ providerID: cfg.provider, modelID: cfg.model })
-    }
-    if (
-      !(cfg.routeConfigured && cfg.provider === "opencode-go") &&
-      readProviderKey("opencode-go")
-    ) {
-      candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
-    }
-    candidates.push({ providerID: "opencode", modelID: "mimo-v2.5-free" })
-
-    for (const { providerID, modelID } of candidates) {
+    for (const { providerID, modelID } of visionCandidates(cfg)) {
       if (abort?.aborted) break
       let sessionID: string | undefined
       try {

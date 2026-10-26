@@ -22,6 +22,8 @@ export type SeeImageOptions = {
   timeout?: number
   apiVersion?: string
   userAgent?: string
+  // "provider/model", tried right after the configured route
+  fallback?: string
 }
 
 export type SeeImageConfig = {
@@ -29,6 +31,7 @@ export type SeeImageConfig = {
   model: string
   // provider+model were user-set (options or env), not defaulted
   routeConfigured: boolean
+  fallback?: string
   endpoint: string
   apiKey?: string
   timeout: number
@@ -41,6 +44,9 @@ export type VisionResult = { text: string; model: string; provider: string }
 const DEFAULT_ENDPOINT = "https://opencode.ai/zen/go/v1/messages"
 const DEFAULT_MODEL = "minimax-m3"
 const DEFAULT_PROVIDER = "opencode-go"
+// Free vision model on the `opencode` provider. Free models get retired every
+// few months; when this one goes, `fallback` keeps see_image working.
+const FREE_MODEL = "mimo-v2.6-flash-free"
 const DEFAULT_TIMEOUT = 30000
 const DEFAULT_API_VERSION = "2023-06-01"
 const DEFAULT_USER_AGENT =
@@ -60,6 +66,7 @@ export function resolveConfig(options: SeeImageOptions = {}): SeeImageConfig {
     provider: provider || DEFAULT_PROVIDER,
     model: model || DEFAULT_MODEL,
     routeConfigured: Boolean(provider && model),
+    fallback: options.fallback || process.env.SEE_IMAGE_FALLBACK,
     endpoint: options.endpoint || process.env.SEE_IMAGE_ENDPOINT || DEFAULT_ENDPOINT,
     apiKey: options.apiKey || process.env.SEE_IMAGE_API_KEY,
     timeout: ms(options.timeout) ?? ms(process.env.SEE_IMAGE_TIMEOUT) ?? DEFAULT_TIMEOUT,
@@ -148,6 +155,33 @@ export function readProviderKey(providerID: string): string | null {
   } catch {
     return null
   }
+}
+
+// Vision models to try, in order: the configured route, the fallback, the
+// paid opencode-go default, then the free opencode model.
+export function visionCandidates(
+  cfg: SeeImageConfig,
+): Array<{ providerID: string; modelID: string }> {
+  const candidates: Array<{ providerID: string; modelID: string }> = []
+  if (cfg.routeConfigured) {
+    candidates.push({ providerID: cfg.provider, modelID: cfg.model })
+  }
+  const [fallbackProvider, ...rest] = (cfg.fallback ?? "").split("/")
+  const fallbackModel = rest.join("/")
+  if (fallbackProvider && fallbackModel) {
+    candidates.push({ providerID: fallbackProvider, modelID: fallbackModel })
+  }
+  // Only try the paid opencode-go model if the user actually has that sub
+  // connected. Free-only users otherwise hit a fatal
+  // ProviderModelNotFoundError before ever reaching the free model below.
+  if (
+    !(cfg.routeConfigured && cfg.provider === "opencode-go") &&
+    readProviderKey("opencode-go")
+  ) {
+    candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
+  }
+  candidates.push({ providerID: "opencode", modelID: FREE_MODEL })
+  return candidates
 }
 
 // Direct Anthropic-Messages call. Used when an explicit apiKey is configured,

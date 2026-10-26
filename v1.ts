@@ -27,6 +27,7 @@ import {
   readProviderKey,
   resolveConfig,
   seeImageViaHTTP,
+  visionCandidates,
   type SeeImageConfig,
   type SeeImageOptions,
   type VisionResult,
@@ -159,22 +160,7 @@ async function seeImageViaSDK(
   let result: VisionResult | undefined
 
   try {
-    const candidates: Array<{ providerID: string; modelID: string }> = []
-    if (cfg.routeConfigured) {
-      candidates.push({ providerID: cfg.provider, modelID: cfg.model })
-    }
-    // Only try the paid opencode-go model if the user actually has that sub
-    // connected. Free/Zen-only users otherwise hit a fatal
-    // ProviderModelNotFoundError before ever reaching the free fallback below.
-    if (
-      !(cfg.routeConfigured && cfg.provider === "opencode-go") &&
-      readProviderKey("opencode-go")
-    ) {
-      candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
-    }
-    candidates.push({ providerID: "opencode", modelID: "mimo-v2.5-free" })
-
-    for (const { providerID, modelID } of candidates) {
+    for (const { providerID, modelID } of visionCandidates(cfg)) {
       if (providerID === "opencode") {
         // SDK session.prompt returns empty for free models; use CLI instead
         const text = await freeFallback(modelID, prompt)

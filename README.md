@@ -41,12 +41,12 @@ the plugin supports **both OpenCode v1 (1.3.4 or newer) and v2 (2.x)**. the same
 
 you need a connected vision-capable provider. The plugin auto-detects whichever you have connected, **either of these work**:
 
-### free (OpenCode Zen)
+### free (OpenCode, formerly Zen)
 1. run `/connect` in opencode
-2. select **opencode** (OpenCode Zen)
+2. select **opencode** (OpenCode, formerly Zen)
 3. paste your API key from [opencode.ai/auth](https://opencode.ai/auth)
 
-the plugin uses **mimo-v2.5-free** automatically — if you don't have an OpenCode Go sub, it skips the paid model entirely (no errors) and routes to the free model.
+the plugin uses **mimo-v2.6-flash-free** automatically — if you don't have an OpenCode Go sub, it skips the paid model entirely (no errors) and routes to the free model. free models get retired every few months and have a usage limit, so set a [`fallback`](#configuration) if you want see_image to keep working when that happens.
 
 ### paid, w/ OpenCode Go
 1. run `/connect` in opencode
@@ -59,7 +59,7 @@ the plugin prefers **minimax-m3** via opencode-go when available.
 
 set the `SEE_IMAGE_*` env vars to point at any Anthropic-Messages-compatible endpoint. see [Configuration](#configuration) below.
 
-**the resolve order:** explicit `SEE_IMAGE_API_KEY` env → configured `SEE_IMAGE_PROVIDER` → `opencode-go` (MiniMax M3) *if you have a Go sub connected* → `opencode` (mimo-v2.5-free). If no Go sub is connected, `opencode-go` is skipped so free users never hit a "model not found" error.
+**the resolve order:** explicit `SEE_IMAGE_API_KEY` env → configured `SEE_IMAGE_PROVIDER` → `fallback` → `opencode-go` (MiniMax M3) *if you have a Go sub connected* → `opencode` (mimo-v2.6-flash-free). If no Go sub is connected, `opencode-go` is skipped so free users never hit a "model not found" error.
 
 ## how the _eye surgery_ works
 
@@ -163,6 +163,7 @@ Supported option keys (all optional):
 |---|---|---|---|
 | `provider` | `SEE_IMAGE_PROVIDER` | `opencode-go` | Provider ID for SDK routing |
 | `model` | `SEE_IMAGE_MODEL` | `minimax-m3` | Vision model ID |
+| `fallback` | `SEE_IMAGE_FALLBACK` | _(none)_ | Second route as `provider/model`, tried right after `provider`/`model` fails |
 | `endpoint` | `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used with `apiKey`) |
 | `apiKey` | `SEE_IMAGE_API_KEY` | _(uses SDK)_ | Bypass SDK, call HTTP endpoint directly |
 | `timeout` | `SEE_IMAGE_TIMEOUT` | `30000` | Per-candidate timeout in ms. Prevents hanging on slow models. |
@@ -181,6 +182,7 @@ same settings as environment variables:
 |---|---|---|
 | `SEE_IMAGE_MODEL` | `minimax-m3` | Vision model ID |
 | `SEE_IMAGE_PROVIDER` | `opencode-go` | Provider ID for SDK routing |
+| `SEE_IMAGE_FALLBACK` | _(none)_ | Second route as `provider/model`, tried right after the configured one |
 | `SEE_IMAGE_API_KEY` | _(uses SDK)_ | Bypass SDK, call HTTP endpoint directly |
 | `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used if `SEE_IMAGE_API_KEY` is set) |
 | `SEE_IMAGE_API_VERSION` | `2023-06-01` | `anthropic-version` header (HTTP mode only) |
@@ -203,13 +205,23 @@ to use a different opencode-go model (e.g. Kimi K2.7):
 export SEE_IMAGE_MODEL="kimi-k2.7-code"
 ```
 
+to fall back to another provider when the main route fails (expired key, usage limit, retired model):
+
+```jsonc
+["opencode-see-image", {
+  "provider": "openai",
+  "model": "gpt-5.4-mini",
+  "fallback": "google/gemini-2.5-flash"
+}]
+```
+
 ### verified vision-capable models
 
-**Free (OpenCode Zen):**
+**Free (OpenCode, formerly Zen):**
 
 | model | Notes |
 |---|---|
-| `mimo-v2.5-free` |  free. may be a bit slow. default fallback when only Zen is connected (routed via CLI on v1, via a tool-less helper session on v2). |
+| `mimo-v2.6-flash-free` | free, usage-limited, image input per models.dev. default fallback when only OpenCode is connected (routed via CLI on v1, via a tool-less helper session on v2). replaces `mimo-v2.5-free`, which is retired. |
 | `big-pickle` | for some reason, big pickle works as an image capable model when called through the sdk w/ an active opencode go sub. |
 
 **paid (OpenCode Go):**
