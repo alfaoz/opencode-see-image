@@ -24,6 +24,7 @@ import {
   SYSTEM_INSTRUCTIONS,
   TOOL_DESCRIPTION,
   heartbeatBar,
+  httpFallbackKey,
   readProviderKey,
   resolveConfig,
   seeImageViaHTTP,
@@ -249,10 +250,7 @@ async function seeImageViaSDK(
     }
 
     if (!result) {
-      const apiKey =
-        cfg.apiKey ||
-        (cfg.provider && readProviderKey(cfg.provider)) ||
-        readProviderKey("opencode-go")
+      const apiKey = cfg.apiKey || httpFallbackKey(cfg)
       if (apiKey) {
         try {
           result = await seeImageViaHTTP(b64, mediaType, prompt, cfg, abort, apiKey)
