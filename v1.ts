@@ -161,6 +161,7 @@ async function seeImageViaSDK(
 
   try {
     for (const { providerID, modelID } of visionCandidates(cfg)) {
+      if (abort?.aborted) break
       if (providerID === "opencode") {
         // SDK session.prompt returns empty for free models; use CLI instead
         const text = await freeFallback(modelID, prompt)

@@ -166,7 +166,7 @@ export function visionCandidates(
   if (cfg.routeConfigured) {
     candidates.push({ providerID: cfg.provider, modelID: cfg.model })
   }
-  const [fallbackProvider, ...rest] = (cfg.fallback ?? "").split("/")
+  const [fallbackProvider, ...rest] = String(cfg.fallback ?? "").split("/")
   const fallbackModel = rest.join("/")
   if (fallbackProvider && fallbackModel) {
     candidates.push({ providerID: fallbackProvider, modelID: fallbackModel })
