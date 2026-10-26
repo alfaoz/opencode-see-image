@@ -158,19 +158,21 @@ export function readProviderKey(providerID: string): string | null {
 }
 
 // Vision models to try, in order: the configured route, the fallback, the
-// paid opencode-go default, then the free opencode model.
+// paid opencode-go default, then the free opencode model. A route that is
+// already listed (e.g. fallback set to a default) is not tried twice.
 export function visionCandidates(
   cfg: SeeImageConfig,
 ): Array<{ providerID: string; modelID: string }> {
   const candidates: Array<{ providerID: string; modelID: string }> = []
-  if (cfg.routeConfigured) {
-    candidates.push({ providerID: cfg.provider, modelID: cfg.model })
+  const add = (providerID: string, modelID: string) => {
+    if (!candidates.some((c) => c.providerID === providerID && c.modelID === modelID)) {
+      candidates.push({ providerID, modelID })
+    }
   }
+  if (cfg.routeConfigured) add(cfg.provider, cfg.model)
   const [fallbackProvider, ...rest] = String(cfg.fallback ?? "").split("/")
   const fallbackModel = rest.join("/")
-  if (fallbackProvider && fallbackModel) {
-    candidates.push({ providerID: fallbackProvider, modelID: fallbackModel })
-  }
+  if (fallbackProvider && fallbackModel) add(fallbackProvider, fallbackModel)
   // Only try the paid opencode-go model if the user actually has that sub
   // connected. Free-only users otherwise hit a fatal
   // ProviderModelNotFoundError before ever reaching the free model below.
@@ -178,9 +180,9 @@ export function visionCandidates(
     !(cfg.routeConfigured && cfg.provider === "opencode-go") &&
     readProviderKey("opencode-go")
   ) {
-    candidates.push({ providerID: "opencode-go", modelID: "minimax-m3" })
+    add("opencode-go", "minimax-m3")
   }
-  candidates.push({ providerID: "opencode", modelID: FREE_MODEL })
+  add("opencode", FREE_MODEL)
   return candidates
 }
 
@@ -248,12 +250,20 @@ export async function seeImageViaHTTP(
 }
 
 // Key for the last-resort HTTP call when no apiKey is set. A stored key only
-// goes to its own provider: any opencode.ai endpoint belongs to opencode-go,
-// a custom one to the configured route. Otherwise a google/openrouter/... key
-// from auth.json would be sent to opencode.ai.
+// goes to its own provider: an opencode.ai endpoint gets an opencode key (the
+// configured opencode/opencode-go route's, else opencode-go's), a custom one
+// the configured route's. Otherwise a google/openrouter/... key from auth.json
+// would be sent to opencode.ai.
 export function httpFallbackKey(cfg: SeeImageConfig): string | null {
-  if (cfg.endpoint.startsWith("https://opencode.ai/")) return readProviderKey("opencode-go")
-  return cfg.routeConfigured ? readProviderKey(cfg.provider) : null
+  const routeKey = cfg.routeConfigured ? readProviderKey(cfg.provider) : null
+  let host = ""
+  try {
+    const url = new URL(cfg.endpoint)
+    if (url.protocol === "https:") host = url.hostname
+  } catch {}
+  if (host !== "opencode.ai") return routeKey
+  const opencodeRoute = cfg.provider === "opencode" || cfg.provider === "opencode-go"
+  return (opencodeRoute && routeKey) || readProviderKey("opencode-go")
 }
 
 // Shared default question and the media-type → extension table re-exported so

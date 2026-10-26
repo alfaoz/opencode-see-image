@@ -24,7 +24,6 @@ import {
   TOOL_DESCRIPTION,
   heartbeatBar,
   httpFallbackKey,
-  readProviderKey,
   resolveConfig,
   seeImageViaHTTP,
   visionCandidates,
