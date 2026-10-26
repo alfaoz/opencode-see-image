@@ -214,11 +214,11 @@ export async function seeImageViaHTTP(
 }
 
 // Key for the last-resort HTTP call when no apiKey is set. A stored key only
-// goes to its own provider: the default endpoint belongs to opencode-go, a
-// custom one to the configured route. Otherwise a google/openrouter/... key
+// goes to its own provider: any opencode.ai endpoint belongs to opencode-go,
+// a custom one to the configured route. Otherwise a google/openrouter/... key
 // from auth.json would be sent to opencode.ai.
 export function httpFallbackKey(cfg: SeeImageConfig): string | null {
-  if (cfg.endpoint === DEFAULT_ENDPOINT) return readProviderKey("opencode-go")
+  if (cfg.endpoint.startsWith("https://opencode.ai/")) return readProviderKey("opencode-go")
   return cfg.routeConfigured ? readProviderKey(cfg.provider) : null
 }
 
