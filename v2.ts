@@ -41,6 +41,10 @@ import {
 } from "./core.ts"
 
 const VISION_INDEX_TTL_MS = 30_000
+// Auto mode: uncached images described at once. Higher values make a resumed
+// session full of screenshots hit provider rate limits, and every helper
+// session shows up in the user's session list.
+const MAX_PARALLEL_DESCRIPTIONS = 3
 
 // The v2 counterpart of v1's SDK_NO_TOOLS (issue #6), applied when the helper
 // session is created. Session rules are merged last and evaluated last-match-
@@ -230,7 +234,16 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     )
   }
 
-  const descriptions = cfg.auto ? createDescriptionCache(defaultCacheDir()) : undefined
+  const descriptions = cfg.auto
+    ? createDescriptionCache({
+        dir: defaultCacheDir(),
+        route: JSON.stringify([
+          DEFAULT_QUESTION,
+          cfg.apiKey ? [cfg.endpoint, cfg.model] : visionCandidates(cfg),
+        ]),
+        timeoutMs: cfg.timeout,
+      })
+    : undefined
 
   function describe(image: FoundImage): Promise<VisionResult> {
     return descriptions!.describe(image.key, () =>
@@ -247,25 +260,45 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
   // Swaps each image the vision model could describe for its description.
   // Images that fail stay in place, so OpenCode turns them into its usual
   // "unsupported input" error and the model can fall back to see_image.
+  // The turn waits at most cfg.timeout. Images still being described then
+  // finish in the background and are used from the cache on a later step.
   async function describeImagesInPlace(input: any) {
     if (!Array.isArray(input?.messages)) return
-    const images = findImages(input.messages)
-    if (images.length === 0) return
+    const queue = findImages(input.messages)
+    if (queue.length === 0) return
     const results = new Map<string, VisionResult>()
-    await Promise.all(
-      images.map(async (image) => {
+    const worker = async () => {
+      for (let image = queue.shift(); image; image = queue.shift()) {
         try {
           results.set(image.key, await describe(image))
         } catch {
           // left in place; see above
         }
+      }
+    }
+    const workers = Array.from({ length: Math.min(MAX_PARALLEL_DESCRIPTIONS, queue.length) }, worker)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([
+      Promise.all(workers),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, cfg.timeout)
+        timer.unref?.()
       }),
-    )
+    ])
+    clearTimeout(timer)
     if (results.size === 0) return
     input.messages = mapImages(input.messages, (image) => {
       const result = results.get(image.key)
       return result && renderDescription(image, result)
     })
+  }
+
+  // Requests that carry the conversation to a text-only model outside the
+  // main turn (compaction, generate) replay the same images.
+  async function describeForTextOnly(input: any) {
+    if (helperSessions.has(input?.sessionID)) return
+    if (await supportsVision(input?.model)) return
+    if (knownTextOnly(input?.model)) await describeImagesInPlace(input)
   }
 
   // Register the tool.
@@ -383,17 +416,13 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
       input.system.push({ type: "text", text: SYSTEM_INSTRUCTIONS })
     })
 
-    // Compaction requests replay the same images; describe them too so the
-    // summary keeps what they showed.
     if (descriptions) {
-      try {
-        await ctx.session.hook("compaction", async (input: any) => {
-          if (helperSessions.has(input?.sessionID)) return
-          if (await supportsVision(input?.model)) return
-          if (knownTextOnly(input?.model)) await describeImagesInPlace(input)
-        })
-      } catch {
-        // builds without the compaction hook keep OpenCode's default
+      for (const name of ["compaction", "generate"]) {
+        try {
+          await ctx.session.hook(name, describeForTextOnly)
+        } catch {
+          // builds without this hook keep OpenCode's default
+        }
       }
     }
   }

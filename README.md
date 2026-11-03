@@ -149,10 +149,11 @@ how it works:
 - it runs in v2's session `context` hook, which sees the request's messages before OpenCode turns unsupported images into its `this model does not support image input` error. each image (pasted, or returned by a tool such as `read`) is replaced with the vision model's description, fenced as untrusted data.
 - it only acts on models the catalog marks as text-only. vision models get the image untouched, and a model missing from the catalog keeps the normal `see_image` flow.
 - the hook edits a per-request copy of the conversation, so nothing is saved. switch to a vision model mid-session and it sees the original image again.
-- each image is described once. descriptions are cached in memory and in `$XDG_CACHE_HOME/opencode-see-image` (default `~/.cache/opencode-see-image`), so replaying the conversation on every step costs no extra vision calls, even after a server restart.
+- each image is described once. descriptions are cached in memory and in `$XDG_CACHE_HOME/opencode-see-image` (default `~/.cache/opencode-see-image`, readable only by you), so replaying the conversation on every step costs no extra vision calls, even after a server restart. the cache is keyed by the vision route too, so switching the vision model gets fresh descriptions. delete the folder to drop all of them.
+- a turn waits at most `timeout` for descriptions, describing up to 3 images at a time. images that aren't done by then stay as they are for that step and finish in the background.
 - if the vision call fails, the image stays as it is: OpenCode inserts its usual error and the model can still call `see_image`. a failed image is retried after 5 minutes, not on every step.
 - `see_image` stays registered, so the model can still ask a specific `question` about an image the description did not cover.
-- compaction requests get the same treatment, so summaries keep what the images showed.
+- compaction and `generate` requests get the same treatment, so summaries keep what the images showed.
 - v1 is unchanged: auto mode needs OpenCode 2.x.
 
 ## configuration
@@ -188,7 +189,7 @@ Supported option keys (all optional):
 | `auto` | `SEE_IMAGE_AUTO` | `false` | v2 only: describe images up front for text-only models instead of waiting for a `see_image` call. See [auto mode](#auto-mode-v2-only-opt-in) |
 | `endpoint` | `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used with `apiKey`) |
 | `apiKey` | `SEE_IMAGE_API_KEY` | _(uses SDK)_ | Bypass SDK, call HTTP endpoint directly |
-| `timeout` | `SEE_IMAGE_TIMEOUT` | `30000` | Per-candidate timeout in ms. Prevents hanging on slow models. |
+| `timeout` | `SEE_IMAGE_TIMEOUT` | `30000` | Per-candidate timeout in ms. Prevents hanging on slow models. In auto mode, also the longest a turn waits for descriptions. |
 | `apiVersion` | `SEE_IMAGE_API_VERSION` | `2023-06-01` | `anthropic-version` header (HTTP mode only) |
 | `userAgent` | `SEE_IMAGE_USER_AGENT` | _(Chrome UA)_ | User-Agent header (HTTP mode only) |
 
@@ -210,7 +211,7 @@ same settings as environment variables:
 | `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used if `SEE_IMAGE_API_KEY` is set) |
 | `SEE_IMAGE_API_VERSION` | `2023-06-01` | `anthropic-version` header (HTTP mode only) |
 | `SEE_IMAGE_USER_AGENT` | _(Chrome UA)_ | User-Agent header (HTTP mode only) |
-| `SEE_IMAGE_TIMEOUT` | `30000` | Per-candidate timeout in ms. Prevents hanging on slow models. |
+| `SEE_IMAGE_TIMEOUT` | `30000` | Per-candidate timeout in ms. Prevents hanging on slow models. In auto mode, also the longest a turn waits for descriptions. |
 
 ### using a different vision model
 

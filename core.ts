@@ -228,7 +228,9 @@ export async function seeImageViaHTTP(
       "user-agent": cfg.userAgent,
     },
     body: JSON.stringify(body),
-    signal: abort,
+    signal: abort
+      ? AbortSignal.any([abort, AbortSignal.timeout(cfg.timeout)])
+      : AbortSignal.timeout(cfg.timeout),
   })
 
   if (!res.ok) {
