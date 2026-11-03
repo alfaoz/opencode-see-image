@@ -12,6 +12,7 @@
     "index.ts",
     "lib.ts",
     "core.ts",
+    "auto.ts",
     "v1.ts",
     "v2.ts"
   ],

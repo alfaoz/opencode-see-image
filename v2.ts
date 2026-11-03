@@ -16,6 +16,15 @@
 import { autoUpdate } from "opencode-plugin-update-kit"
 import { EXT_MEDIA, modelSupportsVision, resolveImageV2 } from "./lib.ts"
 import {
+  createDescriptionCache,
+  defaultCacheDir,
+  findImages,
+  mapImages,
+  renderDescription,
+  type FoundImage,
+} from "./auto.ts"
+import {
+  AUTO_INSTRUCTIONS,
   DEFAULT_QUESTION,
   FILEPATH_DESCRIPTION,
   PKG_NAME,
@@ -32,6 +41,10 @@ import {
 } from "./core.ts"
 
 const VISION_INDEX_TTL_MS = 30_000
+// Auto mode: uncached images described at once. Higher values make a resumed
+// session full of screenshots hit provider rate limits, and every helper
+// session shows up in the user's session list.
+const MAX_PARALLEL_DESCRIPTIONS = 3
 
 // The v2 counterpart of v1's SDK_NO_TOOLS (issue #6), applied when the helper
 // session is created. Session rules are merged last and evaluated last-match-
@@ -96,6 +109,12 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     }
     return visionIndex.get(key) ?? modelSupportsVision(ref)
   }
+  // Auto mode rewrites the transcript, so it acts only on models the catalog
+  // positively marks as text-only. A model missing from the index keeps its
+  // images and gets the tool flow instead. Call after supportsVision(), which
+  // refreshes the index.
+  const knownTextOnly = (ref: any) =>
+    Boolean(ref) && visionIndex.get(`${ref.providerID}/${ref.id}`) === false
 
   // Helper sessions created for the vision call. v2 gives plugins no way to
   // delete a session, so IDs stay here for the plugin's lifetime; the tool
@@ -215,6 +234,65 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     )
   }
 
+  const descriptions = cfg.auto
+    ? createDescriptionCache({
+        dir: defaultCacheDir(),
+        route: JSON.stringify([
+          DEFAULT_QUESTION,
+          cfg.apiKey ? [cfg.endpoint, cfg.model] : visionCandidates(cfg),
+        ]),
+        timeoutMs: cfg.timeout,
+      })
+    : undefined
+
+  function describe(image: FoundImage): Promise<VisionResult> {
+    return descriptions!.describe(image.key, () =>
+      cfg.apiKey
+        ? seeImageViaHTTP(image.base64, image.mediaType, DEFAULT_QUESTION, cfg)
+        : seeImageViaV2(
+            `data:${image.mediaType};base64,${image.base64}`,
+            image.mediaType,
+            DEFAULT_QUESTION,
+          ),
+    )
+  }
+
+  // Swaps each image the vision model could describe for its description.
+  // Images that fail stay in place, so OpenCode turns them into its usual
+  // "unsupported input" error and the model can fall back to see_image.
+  // The turn waits at most cfg.timeout. Images still being described then
+  // finish in the background and are used from the cache on a later step.
+  async function describeImagesInPlace(input: any) {
+    if (!Array.isArray(input?.messages)) return
+    const queue = findImages(input.messages)
+    if (queue.length === 0) return
+    const results = new Map<string, VisionResult>()
+    const worker = async () => {
+      for (let image = queue.shift(); image; image = queue.shift()) {
+        try {
+          results.set(image.key, await describe(image))
+        } catch {
+          // left in place; see above
+        }
+      }
+    }
+    const workers = Array.from({ length: Math.min(MAX_PARALLEL_DESCRIPTIONS, queue.length) }, worker)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([
+      Promise.all(workers),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, cfg.timeout)
+        timer.unref?.()
+      }),
+    ])
+    clearTimeout(timer)
+    if (results.size === 0) return
+    input.messages = mapImages(input.messages, (image) => {
+      const result = results.get(image.key)
+      return result && renderDescription(image, result)
+    })
+  }
+
   // Register the tool.
   if (ctx.tool?.transform) {
     await ctx.tool.transform((editor: any) => {
@@ -310,12 +388,17 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     })
   }
 
+  // Requests outside the main turn (compaction, generate) carry the tool list
+  // and the conversation too, so they get the same treatment.
+  //
   // Vision models see images directly, so they are not offered see_image:
   // its definition would cost every request ~550 tokens for nothing. OpenCode's
   // own patch plugin drops tools per model the same way, and earlier see_image
   // calls stay readable in the history after a model switch.
-  async function hideToolFromVisionModels(input: any) {
+  async function shapeSideRequest(input: any) {
+    if (helperSessions.has(input?.sessionID)) return
     if (await supportsVision(input?.model)) delete input.tools?.see_image
+    else if (descriptions && knownTextOnly(input?.model)) await describeImagesInPlace(input)
   }
 
   // Inject the see_image instructions for text-only models, keep the
@@ -333,15 +416,19 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
         delete input.tools?.see_image
         return
       }
+      if (descriptions && knownTextOnly(input?.model)) {
+        await describeImagesInPlace(input)
+        input.system.push({ type: "text", text: AUTO_INSTRUCTIONS })
+        return
+      }
       input.system.push({ type: "text", text: SYSTEM_INSTRUCTIONS })
     })
 
-    // Compaction and generate requests carry the tool list too.
     for (const name of ["compaction", "generate"]) {
       try {
-        await ctx.session.hook(name, hideToolFromVisionModels)
+        await ctx.session.hook(name, shapeSideRequest)
       } catch {
-        // builds without this hook keep sending the tool
+        // builds without this hook keep OpenCode's default
       }
     }
   }
