@@ -16,6 +16,15 @@
 import { autoUpdate } from "opencode-plugin-update-kit"
 import { EXT_MEDIA, modelSupportsVision, resolveImageV2 } from "./lib.ts"
 import {
+  createDescriptionCache,
+  defaultCacheDir,
+  findImages,
+  mapImages,
+  renderDescription,
+  type FoundImage,
+} from "./auto.ts"
+import {
+  AUTO_INSTRUCTIONS,
   DEFAULT_QUESTION,
   FILEPATH_DESCRIPTION,
   PKG_NAME,
@@ -96,6 +105,12 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     }
     return visionIndex.get(key) ?? modelSupportsVision(ref)
   }
+  // Auto mode rewrites the transcript, so it acts only on models the catalog
+  // positively marks as text-only. A model missing from the index keeps its
+  // images and gets the tool flow instead. Call after supportsVision(), which
+  // refreshes the index.
+  const knownTextOnly = (ref: any) =>
+    Boolean(ref) && visionIndex.get(`${ref.providerID}/${ref.id}`) === false
 
   // Helper sessions created for the vision call. v2 gives plugins no way to
   // delete a session, so IDs stay here for the plugin's lifetime; the tool
@@ -215,6 +230,44 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     )
   }
 
+  const descriptions = cfg.auto ? createDescriptionCache(defaultCacheDir()) : undefined
+
+  function describe(image: FoundImage): Promise<VisionResult> {
+    return descriptions!.describe(image.key, () =>
+      cfg.apiKey
+        ? seeImageViaHTTP(image.base64, image.mediaType, DEFAULT_QUESTION, cfg)
+        : seeImageViaV2(
+            `data:${image.mediaType};base64,${image.base64}`,
+            image.mediaType,
+            DEFAULT_QUESTION,
+          ),
+    )
+  }
+
+  // Swaps each image the vision model could describe for its description.
+  // Images that fail stay in place, so OpenCode turns them into its usual
+  // "unsupported input" error and the model can fall back to see_image.
+  async function describeImagesInPlace(input: any) {
+    if (!Array.isArray(input?.messages)) return
+    const images = findImages(input.messages)
+    if (images.length === 0) return
+    const results = new Map<string, VisionResult>()
+    await Promise.all(
+      images.map(async (image) => {
+        try {
+          results.set(image.key, await describe(image))
+        } catch {
+          // left in place; see above
+        }
+      }),
+    )
+    if (results.size === 0) return
+    input.messages = mapImages(input.messages, (image) => {
+      const result = results.get(image.key)
+      return result && renderDescription(image, result)
+    })
+  }
+
   // Register the tool.
   if (ctx.tool?.transform) {
     await ctx.tool.transform((editor: any) => {
@@ -322,7 +375,26 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
       const vision = await supportsVision(input?.model)
       rememberVision(input?.sessionID, vision)
       if (vision) return
+      if (descriptions && knownTextOnly(input?.model)) {
+        await describeImagesInPlace(input)
+        input.system.push({ type: "text", text: AUTO_INSTRUCTIONS })
+        return
+      }
       input.system.push({ type: "text", text: SYSTEM_INSTRUCTIONS })
     })
+
+    // Compaction requests replay the same images; describe them too so the
+    // summary keeps what they showed.
+    if (descriptions) {
+      try {
+        await ctx.session.hook("compaction", async (input: any) => {
+          if (helperSessions.has(input?.sessionID)) return
+          if (await supportsVision(input?.model)) return
+          if (knownTextOnly(input?.model)) await describeImagesInPlace(input)
+        })
+      } catch {
+        // builds without the compaction hook keep OpenCode's default
+      }
+    }
   }
 }

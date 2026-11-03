@@ -134,6 +134,27 @@ the plugin registers a `see_image` tool with two arguments:
 
 your model calls this tool automatically when you attach a screenshot, you don't need to do anything special. The `question` arg is optional; the model uses it when you ask something specific about the image.
 
+## auto mode (v2 only, opt-in)
+
+by default the text-only model has to notice the image and call `see_image`. with `"auto": true` the plugin describes images **before** the request goes out, so the model just reads a description in place of each image. no tool call, nothing for the model to forget.
+
+```jsonc
+{
+  "plugin": [["opencode-see-image", { "auto": true }]]
+}
+```
+
+how it works:
+
+- it runs in v2's session `context` hook, which sees the request's messages before OpenCode turns unsupported images into its `this model does not support image input` error. each image (pasted, or returned by a tool such as `read`) is replaced with the vision model's description, fenced as untrusted data.
+- it only acts on models the catalog marks as text-only. vision models get the image untouched, and a model missing from the catalog keeps the normal `see_image` flow.
+- the hook edits a per-request copy of the conversation, so nothing is saved. switch to a vision model mid-session and it sees the original image again.
+- each image is described once. descriptions are cached in memory and in `$XDG_CACHE_HOME/opencode-see-image` (default `~/.cache/opencode-see-image`), so replaying the conversation on every step costs no extra vision calls, even after a server restart.
+- if the vision call fails, the image stays as it is: OpenCode inserts its usual error and the model can still call `see_image`. a failed image is retried after 5 minutes, not on every step.
+- `see_image` stays registered, so the model can still ask a specific `question` about an image the description did not cover.
+- compaction requests get the same treatment, so summaries keep what the images showed.
+- v1 is unchanged: auto mode needs OpenCode 2.x.
+
 ## configuration
 
 you can configure the vision route **two ways**: via plugin options in your opencode config (recommended), or via `SEE_IMAGE_*` env vars. The plugin uses opencode's SDK client by default (handles auth automatically). Set `SEE_IMAGE_API_KEY` to bypass the SDK and call an HTTP endpoint directly.
@@ -164,6 +185,7 @@ Supported option keys (all optional):
 | `provider` | `SEE_IMAGE_PROVIDER` | `opencode-go` | Provider ID for SDK routing |
 | `model` | `SEE_IMAGE_MODEL` | `minimax-m3` | Vision model ID |
 | `fallback` | `SEE_IMAGE_FALLBACK` | _(none)_ | Second route as `provider/model`, tried right after `provider`/`model` fails |
+| `auto` | `SEE_IMAGE_AUTO` | `false` | v2 only: describe images up front for text-only models instead of waiting for a `see_image` call. See [auto mode](#auto-mode-v2-only-opt-in) |
 | `endpoint` | `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used with `apiKey`) |
 | `apiKey` | `SEE_IMAGE_API_KEY` | _(uses SDK)_ | Bypass SDK, call HTTP endpoint directly |
 | `timeout` | `SEE_IMAGE_TIMEOUT` | `30000` | Per-candidate timeout in ms. Prevents hanging on slow models. |
@@ -183,6 +205,7 @@ same settings as environment variables:
 | `SEE_IMAGE_MODEL` | `minimax-m3` | Vision model ID |
 | `SEE_IMAGE_PROVIDER` | `opencode-go` | Provider ID for SDK routing |
 | `SEE_IMAGE_FALLBACK` | _(none)_ | Second route as `provider/model`, tried right after the configured one |
+| `SEE_IMAGE_AUTO` | `false` | `1`/`true` turns on [auto mode](#auto-mode-v2-only-opt-in) (v2 only) |
 | `SEE_IMAGE_API_KEY` | _(uses SDK)_ | Bypass SDK, call HTTP endpoint directly |
 | `SEE_IMAGE_ENDPOINT` | `https://opencode.ai/zen/go/v1/messages` | HTTP endpoint (only used if `SEE_IMAGE_API_KEY` is set) |
 | `SEE_IMAGE_API_VERSION` | `2023-06-01` | `anthropic-version` header (HTTP mode only) |

@@ -12,11 +12,13 @@
     "index.ts",
     "lib.ts",
     "core.ts",
+    "auto.ts",
     "v1.ts",
     "v2.ts"
   ],
   "scripts": {
     "build": "bun build index.ts --target=node --format=esm --outdir=dist --external bun:sqlite",
+    "test": "bun test",
     "typecheck": "bun build index.ts --target=node --format=esm --outdir=/tmp/see-image-check --external bun:sqlite",
     "prepublishOnly": "bun run build"
   },
