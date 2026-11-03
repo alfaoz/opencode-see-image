@@ -117,14 +117,18 @@ function sanitize(text: string): string {
     .trim()
 }
 
+const NAME_LIMIT = 512
+
 // File names come from the user or the workspace. Brackets could close the
 // notice early, so they go, along with control characters; JSON quoting
-// handles the rest.
+// handles the rest. `read` names an image by its full path and the model may
+// pass that to see_image, so a real path stays whole. Past the limit only the
+// file name is kept: a cut path matches nothing, a bare name can still resolve.
 function safeName(name: string): string {
-  return name
-    .normalize("NFKC")
-    .replace(/[\p{Cc}\p{Cf}\[\]<>]/gu, "")
-    .slice(0, 120)
+  const clean = name.normalize("NFKC").replace(/[\p{Cc}\p{Cf}\[\]<>]/gu, "")
+  if (clean.length <= NAME_LIMIT) return clean
+  const start = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\")) + 1
+  return clean.slice(start).slice(-NAME_LIMIT)
 }
 
 /** The caveat precedes the description so the model reads it first. */
