@@ -336,11 +336,13 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
       input.system.push({ type: "text", text: SYSTEM_INSTRUCTIONS })
     })
 
-    // Compaction requests carry the tool list too.
-    try {
-      await ctx.session.hook("compaction", hideToolFromVisionModels)
-    } catch {
-      // builds without the compaction hook keep sending the tool
+    // Compaction and generate requests carry the tool list too.
+    for (const name of ["compaction", "generate"]) {
+      try {
+        await ctx.session.hook(name, hideToolFromVisionModels)
+      } catch {
+        // builds without this hook keep sending the tool
+      }
     }
   }
 }

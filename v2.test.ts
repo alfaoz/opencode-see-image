@@ -30,7 +30,7 @@ const request = (id: string, providerID: string) => ({
 
 test("vision models are not offered see_image", async () => {
   const hooks = await sessionHooks()
-  for (const name of ["context", "compaction"]) {
+  for (const name of ["context", "compaction", "generate"]) {
     const input = request("claude", "anthropic")
     await hooks.get(name)!(input)
     expect(Object.keys(input.tools)).toEqual(["read"])
