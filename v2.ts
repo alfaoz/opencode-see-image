@@ -310,6 +310,14 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     })
   }
 
+  // Vision models see images directly, so they are not offered see_image:
+  // its definition would cost every request ~550 tokens for nothing. OpenCode's
+  // own patch plugin drops tools per model the same way, and earlier see_image
+  // calls stay readable in the history after a model switch.
+  async function hideToolFromVisionModels(input: any) {
+    if (await supportsVision(input?.model)) delete input.tools?.see_image
+  }
+
   // Inject the see_image instructions for text-only models, keep the
   // per-session vision flag current, and strip tools from helper sessions.
   if (ctx.session?.hook) {
@@ -321,8 +329,20 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
       }
       const vision = await supportsVision(input?.model)
       rememberVision(input?.sessionID, vision)
-      if (vision) return
+      if (vision) {
+        delete input.tools?.see_image
+        return
+      }
       input.system.push({ type: "text", text: SYSTEM_INSTRUCTIONS })
     })
+
+    // Compaction and generate requests carry the tool list too.
+    for (const name of ["compaction", "generate"]) {
+      try {
+        await ctx.session.hook(name, hideToolFromVisionModels)
+      } catch {
+        // builds without this hook keep sending the tool
+      }
+    }
   }
 }
