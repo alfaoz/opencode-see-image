@@ -104,17 +104,25 @@ async function openDb(dbPath: string): Promise<DbHandle | null> {
 //   - modalities.input           (models.dev style: ["text", "image"])
 //   - capabilities.attachment / attachment  (older shapes; attachment support
 //     has always meant image input in opencode)
-export function modelSupportsVision(model: any): boolean {
-  if (!model) return false
-  const input = model.capabilities?.input
-  if (Array.isArray(input)) return input.includes("image")
+// Whether the model declares image input, or undefined if it declares nothing
+// recognisable. Entries can be a broad kind ("image") or an exact MIME type
+// ("image/png"); OpenCode matches them by prefix, so the plugin must too.
+export function declaredVision(model: any): boolean | undefined {
+  const listsImage = (list: unknown[]) =>
+    list.some((item) => typeof item === "string" && item.startsWith("image"))
+  const input = model?.capabilities?.input
+  if (Array.isArray(input)) return listsImage(input)
   if (input && typeof input.image === "boolean") return input.image
-  const modalities = model.modalities?.input
-  if (Array.isArray(modalities)) return modalities.includes("image")
-  if (typeof model.capabilities?.attachment === "boolean")
+  const modalities = model?.modalities?.input
+  if (Array.isArray(modalities)) return listsImage(modalities)
+  if (typeof model?.capabilities?.attachment === "boolean")
     return model.capabilities.attachment
-  if (typeof model.attachment === "boolean") return model.attachment
-  return false
+  if (typeof model?.attachment === "boolean") return model.attachment
+  return undefined
+}
+
+export function modelSupportsVision(model: any): boolean {
+  return declaredVision(model) ?? false
 }
 
 // ── image part matching ─────────────────────────────────────────────

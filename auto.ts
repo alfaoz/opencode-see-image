@@ -203,8 +203,11 @@ export function createDescriptionCache({ dir, route, timeoutMs }: DescriptionCac
       fs.writeFileSync(temp, JSON.stringify(result), { mode: 0o600 })
       fs.renameSync(temp, target)
     } catch {
-      fs.rmSync(temp, { force: true })
-      // the in-memory entry still serves this process
+      // The in-memory entry still serves this process. force only covers a
+      // missing file, and a throw here would be an unhandled rejection.
+      try {
+        fs.rmSync(temp, { force: true })
+      } catch {}
     }
   }
 

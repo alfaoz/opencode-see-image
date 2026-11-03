@@ -14,7 +14,7 @@
 // helper session instead.
 
 import { autoUpdate } from "opencode-plugin-update-kit"
-import { EXT_MEDIA, modelSupportsVision, resolveImageV2 } from "./lib.ts"
+import { EXT_MEDIA, declaredVision, modelSupportsVision, resolveImageV2 } from "./lib.ts"
 import {
   createDescriptionCache,
   defaultCacheDir,
@@ -85,15 +85,15 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
   // capabilities come from ctx.model.list(), keyed like the ref (Model.Info.id,
   // not modelID, which is the provider-side API id). Cached and refreshed on
   // demand from the (async) context hook; no timer to clean up.
-  let visionIndex = new Map<string, boolean>()
+  let visionIndex = new Map<string, boolean | undefined>()
   let visionIndexAt = 0
   async function refreshVisionIndex() {
     try {
       const list = await ctx.model.list()
-      const next = new Map<string, boolean>()
+      const next = new Map<string, boolean | undefined>()
       for (const model of list?.data ?? list ?? []) {
         if (!model?.id) continue
-        next.set(`${model.providerID}/${model.id}`, modelSupportsVision(model))
+        next.set(`${model.providerID}/${model.id}`, declaredVision(model))
       }
       if (next.size) visionIndex = next
     } catch {
@@ -110,9 +110,9 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     return visionIndex.get(key) ?? modelSupportsVision(ref)
   }
   // Auto mode rewrites the transcript, so it acts only on models the catalog
-  // positively marks as text-only. A model missing from the index keeps its
-  // images and gets the tool flow instead. Call after supportsVision(), which
-  // refreshes the index.
+  // positively marks as text-only. A model missing from the index, or listed
+  // without any input types, keeps its images and gets the tool flow instead.
+  // Call after supportsVision(), which refreshes the index.
   const knownTextOnly = (ref: any) =>
     Boolean(ref) && visionIndex.get(`${ref.providerID}/${ref.id}`) === false
 
@@ -388,6 +388,10 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
     })
   }
 
+  // OpenCode treats a rejected session hook as a defect that ends the turn, so
+  // a surprise while rewriting the request falls back to the see_image flow.
+  const describeImages = (input: any) => describeImagesInPlace(input).catch(() => {})
+
   // Requests outside the main turn (compaction, generate) carry the tool list
   // and the conversation too, so they get the same treatment.
   //
@@ -398,7 +402,7 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
   async function shapeSideRequest(input: any) {
     if (helperSessions.has(input?.sessionID)) return
     if (await supportsVision(input?.model)) delete input.tools?.see_image
-    else if (descriptions && knownTextOnly(input?.model)) await describeImagesInPlace(input)
+    else if (descriptions && knownTextOnly(input?.model)) await describeImages(input)
   }
 
   // Inject the see_image instructions for text-only models, keep the
@@ -417,7 +421,7 @@ export async function setupV2(ctx: any, options?: SeeImageOptions) {
         return
       }
       if (descriptions && knownTextOnly(input?.model)) {
-        await describeImagesInPlace(input)
+        await describeImages(input)
         input.system.push({ type: "text", text: AUTO_INSTRUCTIONS })
         return
       }

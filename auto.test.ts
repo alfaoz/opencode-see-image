@@ -8,7 +8,7 @@ import {
   mapImages,
   renderDescription,
 } from "./auto.ts"
-import { AUTO_INSTRUCTIONS, SYSTEM_INSTRUCTIONS } from "./core.ts"
+import { AUTO_INSTRUCTIONS, SYSTEM_INSTRUCTIONS, resolveConfig } from "./core.ts"
 
 mock.module("opencode-plugin-update-kit", () => ({ autoUpdate: async () => {} }))
 const { setupV2 } = await import("./v2.ts")
@@ -117,6 +117,11 @@ describe("renderDescription", () => {
   })
 })
 
+test("only the usual spellings turn auto mode on", () => {
+  for (const on of [true, "true", "1", "on"]) expect(resolveConfig({ auto: on as any }).auto).toBe(true)
+  for (const off of [false, "false", "0", "off"]) expect(resolveConfig({ auto: off as any }).auto).toBe(false)
+})
+
 describe("createDescriptionCache", () => {
   let dir: string
   beforeEach(() => (dir = fs.mkdtempSync(path.join(os.tmpdir(), "see-image-cache-"))))
@@ -146,6 +151,22 @@ describe("createDescriptionCache", () => {
     const files = fs.readdirSync(dir)
     expect(files).toHaveLength(1)
     expect(fs.statSync(path.join(dir, files[0])).mode & 0o777).toBe(0o600)
+  })
+
+  test("survives a cache folder it cannot create", async () => {
+    const blocked = path.join(dir, "a-file")
+    fs.writeFileSync(blocked, "")
+    const unhandled: unknown[] = []
+    const onUnhandled = (error: unknown) => unhandled.push(error)
+    process.on("unhandledRejection", onUnhandled)
+    try {
+      const descriptions = createDescriptionCache({ dir: path.join(blocked, "cache"), route: "r", timeoutMs: 1000 })
+      expect(await descriptions.describe("k", async () => result)).toEqual(result)
+      await Bun.sleep(0)
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off("unhandledRejection", onUnhandled)
+    }
   })
 
   test("does not retry a failed image right away", async () => {
@@ -203,6 +224,8 @@ describe("v2 context hook in auto mode", () => {
           list: async () => [
             { id: "glm", providerID: "zai", capabilities: { input: ["text"] } },
             { id: "claude", providerID: "anthropic", capabilities: { input: ["text", "image"] } },
+            { id: "mime", providerID: "modal", capabilities: { input: ["text", "image/png"] } },
+            { id: "bare", providerID: "someone" },
           ],
         },
         tool: { transform: async () => {} },
@@ -249,6 +272,56 @@ describe("v2 context hook in auto mode", () => {
     expect(input.messages[0].content[1].type).toBe("media")
     expect(input.system).toEqual([{ type: "text", text: SYSTEM_INSTRUCTIONS }])
     expect(visionCalls).toBe(0)
+  })
+
+  test("leaves images alone for models that list exact image types", async () => {
+    const hook = await contextHook({ auto: true })
+    const input = request("mime", "modal")
+    await hook(input)
+    expect(input.messages[0].content[1].type).toBe("media")
+    expect(input.system).toEqual([])
+    expect(visionCalls).toBe(0)
+  })
+
+  test("falls back to the tool flow for a catalog entry without input types", async () => {
+    const hook = await contextHook({ auto: true })
+    const input = request("bare", "someone")
+    await hook(input)
+    expect(input.messages[0].content[1].type).toBe("media")
+    expect(input.system).toEqual([{ type: "text", text: SYSTEM_INSTRUCTIONS }])
+    expect(visionCalls).toBe(0)
+  })
+
+  test("a failed rewrite does not end the turn", async () => {
+    class Strict {
+      role = "user"
+      content = [base64Image()]
+      constructor(input?: unknown) {
+        if (input) throw new Error("schema rejected the message")
+      }
+    }
+    const hook = await contextHook({ auto: true })
+    const message = new Strict()
+    const input = { ...request("glm", "zai"), messages: [message] as any[] }
+    await hook(input)
+    expect(input.messages[0]).toBe(message)
+    expect(input.system).toEqual([{ type: "text", text: AUTO_INSTRUCTIONS }])
+  })
+
+  test("side requests hide the tool from vision models and describe for text-only ones", async () => {
+    const hooks = await sessionHooks({ auto: true })
+    const tools = () => ({ read: {}, see_image: {} }) as Record<string, unknown>
+    for (const name of ["compaction", "generate"]) {
+      const vision = { ...request("claude", "anthropic"), tools: tools() }
+      await hooks.get(name)!(vision)
+      expect(Object.keys(vision.tools)).toEqual(["read"])
+      expect(vision.messages[0].content[1].type).toBe("media")
+
+      const textOnly = { ...request("glm", "zai"), tools: tools() }
+      await hooks.get(name)!(textOnly)
+      expect(Object.keys(textOnly.tools)).toEqual(["read", "see_image"])
+      expect(textOnly.messages[0].content[1].text).toContain("a red button")
+    }
   })
 
   test("keeps the tool flow when auto is off", async () => {

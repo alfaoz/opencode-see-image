@@ -153,6 +153,7 @@ how it works:
 - a turn waits at most `timeout` for descriptions, describing up to 3 images at a time. images that aren't done by then stay as they are for that step and finish in the background.
 - if the vision call fails, the image stays as it is: OpenCode inserts its usual error and the model can still call `see_image`. a failed image is retried after 5 minutes, not on every step.
 - `see_image` stays registered, so the model can still ask a specific `question` about an image the description did not cover.
+- the model only knows what the description says, so pick a strong vision model with `provider`/`model`. a small one can misread or skip details.
 - compaction and `generate` requests get the same treatment, so summaries keep what the images showed.
 - v1 is unchanged: auto mode needs OpenCode 2.x.
 

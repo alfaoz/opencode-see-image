@@ -71,7 +71,7 @@ export function resolveConfig(options: SeeImageOptions = {}): SeeImageConfig {
     model: model || DEFAULT_MODEL,
     routeConfigured: Boolean(provider && model),
     fallback: options.fallback || process.env.SEE_IMAGE_FALLBACK,
-    auto: options.auto ?? /^(1|true|yes|on)$/i.test(process.env.SEE_IMAGE_AUTO ?? ""),
+    auto: /^(1|true|yes|on)$/i.test(String(options.auto ?? process.env.SEE_IMAGE_AUTO ?? "")),
     endpoint: options.endpoint || process.env.SEE_IMAGE_ENDPOINT || DEFAULT_ENDPOINT,
     apiKey: options.apiKey || process.env.SEE_IMAGE_API_KEY,
     timeout: ms(options.timeout) ?? ms(process.env.SEE_IMAGE_TIMEOUT) ?? DEFAULT_TIMEOUT,
